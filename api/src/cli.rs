@@ -1,7 +1,7 @@
 use anyhow::Context;
 use sqlx::PgPool;
 
-use crate::auth::password::{MIN_PASSWORD_CHARS, hash_password};
+use crate::auth::password::{MIN_PASSWORD_CHARS, hash_password_async};
 use crate::domain::users::{self, ROLE_ADMIN, is_valid_email, normalize_email};
 
 /// `api create-admin <email>`：互動輸入密碼兩次（規格 §11）。
@@ -35,7 +35,7 @@ pub async fn create_admin_with_password(
         password.chars().count() >= MIN_PASSWORD_CHARS,
         "密碼至少 {MIN_PASSWORD_CHARS} 碼"
     );
-    let hash = hash_password(password)?;
+    let hash = hash_password_async(password.to_owned()).await?;
     match users::find_by_email(db, &email)
         .await
         .context("查詢使用者")?

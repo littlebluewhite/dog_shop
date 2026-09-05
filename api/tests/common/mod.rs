@@ -9,7 +9,7 @@ use axum::{
 };
 use dog_shop_api::{app, config::Config, state::AppState};
 use http_body_util::BodyExt;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
@@ -68,4 +68,49 @@ pub async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value, H
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
     };
     (status, json, headers)
+}
+
+pub const ADMIN_EMAIL: &str = "admin@test.local";
+pub const ADMIN_PASSWORD: &str = "password123";
+
+pub async fn create_admin(pool: &PgPool) {
+    dog_shop_api::cli::create_admin_with_password(pool, ADMIN_EMAIL, ADMIN_PASSWORD)
+        .await
+        .unwrap();
+}
+
+/// 登入並回傳 "sid=<uuid>"，之後直接放進 Cookie header
+pub async fn login(app: &Router, email: &str, password: &str) -> String {
+    let (status, body, headers) = send(
+        app,
+        req(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(json!({ "email": email, "password": password })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login failed: {body}");
+    let set_cookie = headers
+        .get(header::SET_COOKIE)
+        .expect("set-cookie")
+        .to_str()
+        .unwrap();
+    set_cookie.split(';').next().unwrap().to_string()
+}
+
+/// 建 admin 並登入，回 cookie
+pub async fn admin_cookie(app: &Router, pool: &PgPool) -> String {
+    create_admin(pool).await;
+    login(app, ADMIN_EMAIL, ADMIN_PASSWORD).await
+}
+
+/// 建一個一般會員並登入（還沒有註冊 API，直接寫 DB）
+pub async fn customer_cookie(app: &Router, pool: &PgPool) -> String {
+    let hash = dog_shop_api::auth::password::hash_password("password123").unwrap();
+    dog_shop_api::domain::users::create(pool, "user@test.local", &hash, "小明", "customer")
+        .await
+        .unwrap();
+    login(app, "user@test.local", "password123").await
 }

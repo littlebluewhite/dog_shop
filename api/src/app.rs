@@ -13,6 +13,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(routes::health::router())
         .merge(routes::settings::router())
+        .merge(routes::auth::router())
         .layer(TraceLayer::new_for_http())
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
