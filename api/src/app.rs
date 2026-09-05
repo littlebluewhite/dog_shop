@@ -7,10 +7,12 @@ use crate::{routes, state::AppState};
 /// 上傳上限 10 MB，多留一點給 multipart 邊界與 JSON
 pub const BODY_LIMIT_BYTES: usize = 10 * 1024 * 1024 + 64 * 1024;
 
-/// 組出整個 API。layer 的順序：後加的在外層，所以 request id 最外、trace 其次。
+/// 組出整個 API。layer 的順序：後加的在外層，所以由外到內是
+/// DefaultBodyLimit → SetRequestId → PropagateRequestId → Trace → handler。
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(routes::health::router())
+        .merge(routes::settings::router())
         .layer(TraceLayer::new_for_http())
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))

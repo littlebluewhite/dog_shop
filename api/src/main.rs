@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
+use dog_shop_api::db;
 use dog_shop_api::{app, config::Config, state::AppState};
-use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -16,10 +16,8 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Arc::new(Config::from_env()?);
-    let db = PgPoolOptions::new()
-        .max_connections(10)
-        .connect(&config.database_url)
-        .await?;
+    let db = db::connect(&config.database_url).await?;
+    db::migrate(&db).await?;
 
     let state = AppState {
         db,
