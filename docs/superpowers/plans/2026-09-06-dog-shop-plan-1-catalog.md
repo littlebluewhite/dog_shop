@@ -75,7 +75,7 @@
 - 本機有 Homebrew 的 PostgreSQL 14 **客戶端**（`psql`）。**開發資料庫在 `localhost:5435`**（Task 1 發現 5432、5433、5434 都被別的專案的容器占用）。本計畫所有指令已改成 5435；只有 Task 17 的 GitHub Actions 仍是 5432，因為那是 CI 容器裡的埠。
 - 開發資料庫連線字串（下面所有測試指令都直接寫出來）：`postgres://dog_shop:dog_shop@localhost:5435/dog_shop`。`#[sqlx::test]` 從**行程環境變數** `DATABASE_URL` 讀連線（不會讀 `.env`），所以測試指令一律寫成 `DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test`。它會為每個測試建獨立的臨時資料庫並跑 `migrations/`（Docker 的 postgres 使用者是 superuser，有權限）。
 - `cargo run`（開發啟動）用 `dotenvy` 從目前目錄往上找 `.env`，所以根目錄的 `.env`（Task 1 從 `.env.example` 複製）會被 `cd api && cargo run` 讀到。
-- sqlx 0.9 的 feature：`FromRow` derive 在 `derive`；`#[sqlx::test]` 需要 `migrate`；runtime 用 `runtime-tokio`；TLS 用 `tls-rustls-ring`。
+- sqlx 0.9 的 feature：`FromRow` derive 在 `derive`；`#[sqlx::test]` 需要 `migrate`；runtime 用 `runtime-tokio`；TLS 用 `tls-rustls-ring`。**sqlx 0.9 的 `query` / `query_as` / `query_scalar` 只接受 `&'static str`**（`SqlSafeStr`）；用 `format!` 動態組出來的 SQL（例如白名單 ORDER BY、測試裡的表名）要寫成 `sqlx::query_as::<_, T>(sqlx::AssertSqlSafe(sql))`，且只能包沒有使用者輸入的字串（Task 3 已驗證可編譯）。
 - axum 0.8 路徑參數寫法是 `/api/products/{slug}`（大括號），不是 `:slug`。
 - `sv create` 要完全非互動：`--template minimal --types ts --no-add-ons --no-dir-check --no-download-check --install pnpm`。Tailwind 與 adapter-node 手動加（Task 11 有完整步驟）。
 - Rust 每次 commit 前跑 `cargo fmt --all` 與 `cargo clippy --all-targets -- -D warnings`（CI 會用同樣的指令）。前端每次 commit 前跑 `pnpm check`。
@@ -3781,7 +3781,8 @@ pub async fn list_public(
          ORDER BY {order}, p.id DESC
          LIMIT $3 OFFSET $4"
     );
-    let items = sqlx::query_as::<_, PublicListItem>(&sql)
+    // sqlx 0.9 只接受 &'static str 或 AssertSqlSafe 包住的字串；order 來自上面的白名單，沒有使用者輸入
+    let items = sqlx::query_as::<_, PublicListItem>(sqlx::AssertSqlSafe(sql))
         .bind(q)
         .bind(category_slug)
         .bind(per_page)
