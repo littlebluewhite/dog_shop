@@ -1,0 +1,47 @@
+[package]
+name = "dog-shop-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+[lib]
+name = "dog_shop_api"
+path = "src/lib.rs"
+
+[[bin]]
+name = "api"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.6"
+axum = { version = "0.8", features = ["macros", "multipart"] }
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.9", features = [
+  "chrono",
+  "derive",
+  "json",
+  "macros",
+  "migrate",
+  "postgres",
+  "runtime-tokio",
+  "tls-rustls-ring",
+  "uuid",
+] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.7", features = ["fs", "request-id", "set-header", "trace"] }
+tower_governor = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["serde", "v4", "v7"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
