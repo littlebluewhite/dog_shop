@@ -15,7 +15,7 @@
 - 前端一律用最新版 SvelteKit 2 / Svelte 5 runes（`$state`、`$derived`、`$props`、`$effect`），不用 legacy `export let` / store 寫法（規格 §1.1）。
 - 後端 Rust 1.98 stable、axum 0.8、sqlx 0.9、tokio；edition 2024（規格 §1.1）。
 - 資料庫 PostgreSQL 17；主鍵 UUID v7（app 端 `Uuid::now_v7()` 產生）；金額 `integer` 新台幣；時間 `timestamptz` 存 UTC（規格 §3）。
-- 錯誤回應格式固定 `{ "error": { "code", "message", "details" } }`；本計畫用到的 code：`VALIDATION`、`UNAUTHORIZED`、`FORBIDDEN`、`NOT_FOUND`、`RATE_LIMITED`、`INTERNAL`（規格 §10）。
+- 錯誤回應格式固定 `{ "error": { "code", "message", "details" } }`；本計畫用到的 code：`VALIDATION`、`UNAUTHORIZED`、`FORBIDDEN`、`NOT_FOUND`、`RATE_LIMITED`、`INTERNAL`（規格 §10）。`VALIDATION` 的 `details` 有兩種：欄位層級驗證是 `{ "fields": { "<欄位>": "<訊息>" } }`；整個 JSON body／查詢字串／網址參數解析失敗（沒有可歸屬的欄位）是 `{ "detail": "<解析錯誤文字>" }`。前端 `ApiError.field()` 在後者會回 undefined，顯示 `message` 即可。
 - 密碼 argon2id、最少 8 碼；cookie `sid`：`HttpOnly`、`Secure`（開發可關）、`SameSite=Lax`、`Path=/`、30 天；所有變更請求要 `X-Requested-With: fetch` 並比對 `Origin`；`/api/auth/*` 每 IP 每分鐘 10 次（規格 §11）。
 - 上傳只收 jpeg/png/webp/gif、≤ 10 MB，伺服器重新解碼再輸出（主圖最長邊 1600、縮圖 400），存 `uploads/yyyy/mm/{uuid}`，回 `Cache-Control: public, max-age=31536000, immutable`（規格 §11；輸出格式見「與規格不同之處」）。
 - 商品：最多兩層規格名稱、沒規格也有一列預設規格、圖片最多 9 張、刪除＝`archived`、slug 預設 8 碼隨機小寫英數字、描述純文字（規格 §3）。
