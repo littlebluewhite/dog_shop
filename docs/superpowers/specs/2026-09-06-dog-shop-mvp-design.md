@@ -102,7 +102,7 @@ dog_shop/
 | `products` | id, slug unique, name, description, category_id, status ∈ {draft, active, archived}, option1_name, option2_name, external_ref unique nullable, sort_order, created_at, updated_at | 最多兩層規格名稱（同蝦皮）。刪除 = archived，不真刪。`slug` 預設 8 碼隨機小寫字母數字，後台可改成英文 slug。`description` 為純文字、保留換行 |
 | `product_variants` | id, product_id, option1_value, option2_value, sku, price, compare_at_price nullable, stock, is_active, image_id nullable, sort_order | 每個規格一列。沒規格的商品也有一列「預設」規格 |
 | `product_images` | id, product_id, path, thumb_path, alt, sort_order | 最多 9 張 |
-| `orders` | id, order_no unique, user_id nullable, guest_token, status ∈ {pending_payment, paid, shipped, completed, cancelled, refunded}, email, recipient_name, recipient_phone, shipping_method ∈ {cvs, home}, subtotal, shipping_fee, total, note, invoice_type ∈ {personal, company, donation}, invoice_carrier_type, invoice_carrier_num, invoice_tax_id, invoice_title, invoice_love_code, created_at, paid_at, shipped_at, completed_at, cancelled_at, cancel_reason | 訂單主檔。`order_no` 格式 `DS` + yyMMdd + 4 碼隨機大寫字母數字 |
+| `orders` | id, order_no unique, user_id nullable, guest_token, status ∈ {pending_payment, paid, shipped, completed, cancelled, refunded}, email, recipient_name, recipient_phone, shipping_method ∈ {cvs, home}, subtotal, shipping_fee, total, note, invoice_type ∈ {personal, company, donation}, invoice_carrier_type, invoice_carrier_num, invoice_tax_id, invoice_title, invoice_address, invoice_love_code, needs_refund, created_at, paid_at, shipped_at, completed_at, cancelled_at, cancel_reason | 訂單主檔。`order_no` 格式 `DS` + yyMMdd + 4 碼隨機大寫字母數字 |
 | `order_items` | id, order_id, variant_id, product_name, variant_label, unit_price, quantity, line_total, image_path | 下單當時的快照 |
 | `payments` | id, order_id, merchant_trade_no unique, method ∈ {credit, atm, cvs_code}, status ∈ {pending, paid, failed, expired}, amount, ecpay_trade_no, payment_type, payment_date, atm_bank_code, atm_vaccount, cvs_payment_no, expire_at, raw jsonb, created_at, updated_at | 一次付款嘗試一列。`merchant_trade_no` = order_no + 兩碼流水（綠界要求唯一，重付要換號） |
 | `shipments` | id, order_id unique, method, cvs_sub_type ∈ {UNIMARTC2C, FAMIC2C, HILIFEC2C}, cvs_store_id, cvs_store_name, cvs_store_address, cvs_store_phone, home_postal_code, home_city, home_district, home_street, status ∈ {pending, created, in_transit, arrived, picked_up, returned, shipped}, ecpay_logistics_id, ecpay_merchant_trade_no, cvs_payment_no, cvs_validation_no, carrier, tracking_no, last_status_code, last_status_msg, raw jsonb, created_at, updated_at | 一筆訂單一筆出貨 |
@@ -124,13 +124,15 @@ paid ──後台取消（先在綠界後台手動退款）──► refunded（
 - ATM、超商代碼付款：拿到繳費資訊後訂單仍是 `pending_payment`，`payments` 上有虛擬帳號或繳費代碼與期限，訂單頁顯示給買家。
 - 出貨的細部狀態在 `shipments.status`：`pending → created → in_transit → arrived → picked_up`（超商），或 `pending → shipped`（宅配）。超商狀態由綠界物流狀態回呼更新，代碼對應表寫在 `ecpay/logistics.rs`。
 - 超商未取件被退回：`shipments.status = returned`，訂單維持 `shipped`，後台列表標紅提醒老闆處理（在綠界後台退款後按「標記已退款」）。
+- 已付款但尚未出貨的訂單被標記 `refunded` 時，庫存加回去（同取消）。已出貨的不加回。
+- 遲到的付款：付款成功回呼到達時，訂單已是 `cancelled`（過期）或已因另一筆付款嘗試變成 `paid`，就只把該筆 `payment` 標 `paid`，不動庫存、不改訂單狀態，把 `orders.needs_refund` 設為 true。後台儀表板列出「需退款」，老闆在綠界後台退款後按「已處理」清除。
 - 訪客訂單不會在事後自動連結到同 Email 註冊的會員帳號。
 
 ## 5. 庫存規則
 
 - 下單時在同一個交易內對每個品項執行 `UPDATE product_variants SET stock = stock - $qty WHERE id = $id AND stock >= $qty`。任何一列影響筆數為 0 就整筆 rollback，回 `OUT_OF_STOCK` 並列出不足的品項。這樣多人同時搶購也不會超賣。
 - 取消或過期：把 `order_items` 的數量加回去。
-- 未付款過期：worker 每 10 分鐘掃 `pending_payment` 且 `created_at` 超過 3 天 2 小時的訂單，標 `cancelled(reason=expired)` 並歸還庫存。綠界端 ATM `ExpireDate=3` 天、超商代碼 `StoreExpireDate=4320` 分鐘（3 天），所以不會出現「綠界收到錢但我們已取消」的情形。
+- 未付款過期：worker 每 10 分鐘掃 `pending_payment` 的訂單。到期時間以該訂單所有 `payments.expire_at`（來自 `PaymentInfoURL` 的繳費期限）的最大值加 2 小時緩衝為準；沒有任何繳費期限（例如只嘗試過信用卡）就用 `created_at` 加 3 天。到期就標 `cancelled(reason=expired)` 並歸還庫存。綠界端 ATM `ExpireDate=3` 天（虛擬帳號到最後一天 23:59:59 有效，所以不能用固定天數推算）、超商代碼 `StoreExpireDate=4320` 分鐘。萬一仍有錢在取消後才進來，走 §4 的「遲到的付款」規則。
 
 ## 6. 前端（SvelteKit）
 
@@ -154,7 +156,7 @@ paid ──後台取消（先在綠界後台手動退款）──► refunded（
 
 | 路徑 | 內容 |
 |---|---|
-| `/admin` | 今日訂單、待出貨、待處理發票失敗 |
+| `/admin` | 今日訂單、待出貨、發票開立失敗、需退款（遲到付款）、超商退回 |
 | `/admin/products`、`/admin/products/new`、`/admin/products/[id]` | 商品 CRUD、拖曳排序圖片、規格表格編輯 |
 | `/admin/categories` | 分類 CRUD |
 | `/admin/import` | 上傳 Excel → 預覽 → 確認匯入 |
@@ -176,7 +178,7 @@ paid ──後台取消（先在綠界後台手動退款）──► refunded（
    - **超商取貨**：選 7-11 / 全家 / 萊爾富，按「選擇門市」。前端先把表單狀態存到 sessionStorage，再呼叫 `POST /api/checkout/cvs-map` 拿綠界電子地圖表單欄位，用隱藏表單 POST 到綠界（頂層導頁，不用 iframe）。買家在綠界地圖選完，綠界用買家的瀏覽器 POST 門市資料到我們的 `POST /api/ecpay/logistics/map-reply`。我們存進 `cvs_store_selections`，回 303 轉到 `/checkout?store=<token>`。頁面還原表單、用 token 取回門市顯示。
    - **宅配**：填郵遞區號、縣市、鄉鎮、地址。
 3. 運費：從 `settings` 讀「超商運費」「宅配運費」「免運門檻」（以商品小計 `subtotal` 比較），前端顯示，伺服器重算。超商取貨商品金額上限 20,000 元（綠界 C2C 限制），超過要求改宅配。
-4. 發票：個人（預設存入綠界會員載具並寄 Email；可填手機條碼或自然人憑證）、公司（統編 + 抬頭）、捐贈（愛心碼）。
+4. 發票：個人（預設存入綠界會員載具並寄 Email；可填手機條碼或自然人憑證）、公司（統編 + 抬頭 + 發票地址，因為綠界公司戶發票要 `Print=1` 且必填地址）、捐贈（愛心碼）。
 5. 付款方式：信用卡、ATM 轉帳、超商代碼。
 6. 送出 `POST /api/orders`，內容含品項 `{variant_id, qty}`、收件、出貨、發票、付款方式、門市 token。伺服器在一個交易內：驗證商品有效、重算金額與運費、扣庫存（§5）、建立 `orders`、`order_items`、`shipments`、`payments(pending)`、`invoices(pending)`，排一個 `send_email:order_created` job。回傳 `{ order_id, order_no, guest_token, ecpay: { action, fields } }`，`fields` 含算好的 `CheckMacValue`。
 7. 前端用隱藏表單把 `fields` POST 到綠界 `AioCheckOut/V5`。
@@ -190,7 +192,7 @@ paid ──後台取消（先在綠界後台手動退款）──► refunded（
 
 三套 API、三組憑證，分別放 `ECPAY_AIO_*`、`ECPAY_LOGISTICS_*`、`ECPAY_INVOICE_*` 環境變數。`ECPAY_ENV=stage|prod` 決定網址。
 
-時間：DB 一律存 UTC；送給綠界的所有時間欄位（`MerchantTradeDate`、`Timestamp`）用台北時間（UTC+8）；前端顯示台北時間。
+時間：DB 一律存 UTC。送給綠界的格式化日期字串（`MerchantTradeDate` 等 `yyyy/MM/dd HH:mm:ss`）用台北時間（UTC+8）。電子發票的 `RqHeader.Timestamp` 是 Unix epoch 秒數，沒有時區，不能加 8 小時（綠界只接受約 10 分鐘內的請求）。前端顯示台北時間。
 
 ### 8.1 共用：CheckMacValue（`ecpay/mac.rs`）
 
@@ -201,6 +203,7 @@ paid ──後台取消（先在綠界後台手動退款）──► refunded（
 - 建立：POST 表單到 `/Cashier/AioCheckOut/V5`。欄位：`MerchantID`、`MerchantTradeNo`、`MerchantTradeDate`、`PaymentType=aio`、`TotalAmount`、`TradeDesc`、`ItemName`（品項用 `#` 連接，超長截斷）、`ReturnURL`、`ChoosePayment ∈ {Credit, ATM, CVS}`、`ClientBackURL`、`PaymentInfoURL`、`ExpireDate=3`、`StoreExpireDate=4320`、`NeedExtraPaidInfo=N`、`EncryptType=1`、`CustomField1=order_id`、`CheckMacValue`。
 - 回呼驗證：重算 `CheckMacValue` 比對；不符回 HTTP 400 `0|CheckMacValue Error` 並記 log。找不到 `MerchantTradeNo` 回 `0|Unknown MerchantTradeNo`。
 - 測試環境有「模擬付款」按鈕，通知會帶 `SimulatePaid=1`，只記 log 不改狀態。
+- 回呼到達時訂單已 `cancelled` 或已 `paid`：依 §4「遲到的付款」處理，仍回 `1|OK`。
 
 ### 8.3 物流（`ecpay/logistics.rs`）
 
@@ -213,7 +216,7 @@ paid ──後台取消（先在綠界後台手動退款）──► refunded（
 ### 8.4 電子發票（`ecpay/invoice.rs`，`ecpay/aes.rs`）
 
 - 端點 `/B2CInvoice/Issue`，JSON。外層 `{ MerchantID, RqHeader: { Timestamp }, Data }`。`Data` = 內層 JSON → URL encode → AES-128-CBC（HashKey 為 key、HashIV 為 iv、PKCS7）→ Base64。回應反向解開。
-- 內層欄位：`RelateNumber=order_no`、`CustomerEmail`、`CustomerPhone`、`Print`、`Donation`、`LoveCode`、`CarrierType`（`1` 綠界載具 / `2` 自然人憑證 / `3` 手機條碼）、`CarrierNum`、`CustomerIdentifier`（統編，公司戶）、`CustomerName`、`CustomerAddr`、`TaxType=1`、`SalesAmount=total`、`InvType=07`、`vat=1`、`Items[]`（每個 `order_item` 一列，運費大於 0 時多一列「運費」）。公司戶依綠界規定不帶載具、`Print=1`。
+- 內層欄位：`RelateNumber=order_no`、`CustomerEmail`、`CustomerPhone`、`Print`、`Donation`、`LoveCode`、`CarrierType`（`1` 綠界載具 / `2` 自然人憑證 / `3` 手機條碼）、`CarrierNum`、`CustomerIdentifier`（統編，公司戶）、`CustomerName`、`CustomerAddr`、`TaxType=1`、`SalesAmount=total`、`InvType=07`、`vat=1`、`Items[]`（每個 `order_item` 一列，運費大於 0 時多一列「運費」）。公司戶依綠界規定不帶載具、`Print=1`，並帶 `CustomerName`（抬頭）與 `CustomerAddr`（發票地址）。實作時確認 `CarrierType=1` 是否要求 `CustomerID` 非空；若要求，用 `order_no`。
 - 由 `issue_invoice` job 執行：成功存 `InvoiceNo`、`InvoiceDate`、`RandomNumber`，排 `send_email:invoice_issued`（綠界也會寄）。失敗指數退避重試最多 5 次，仍失敗標 `failed`，後台顯示並提供「重試」。`dedupe_key = invoice:{order_id}` 保證不重複開立。
 
 ### 8.5 測試環境憑證（公開資料，只能用於 stage）
@@ -232,7 +235,7 @@ paid ──後台取消（先在綠界後台手動退款）──► refunded（
 - 一個 tokio task 每 2 秒 `SELECT ... WHERE status='queued' AND run_at <= now() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 10`，逐筆執行。
 - 失敗：`attempts + 1`，`run_at = now() + 2^attempts 分鐘`，超過 `max_attempts` 標 `failed`。
 - job 種類：`send_email`、`issue_invoice`。
-- 排程型工作（不走 jobs 表，直接在 worker 內定時）：`expire_unpaid_orders`（每 10 分鐘）、`auto_complete_shipped`（每小時，出貨超過 14 天轉 completed）、`purge_expired_sessions`（每天）。
+- 排程型工作（不走 jobs 表，直接在 worker 內定時）：`expire_unpaid_orders`（每 10 分鐘）、`auto_complete_shipped`（每小時，出貨超過 14 天且 `shipments.status` 不是 `returned` 的訂單轉 completed）、`purge_expired_sessions`（每天）。
 
 ## 10. 後端 API
 
