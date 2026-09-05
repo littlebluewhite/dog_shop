@@ -79,6 +79,8 @@
 - axum 0.8 路徑參數寫法是 `/api/products/{slug}`（大括號），不是 `:slug`。
 - `sv create` 要完全非互動：`--template minimal --types ts --no-add-ons --no-dir-check --no-download-check --install pnpm`。Tailwind 與 adapter-node 手動加（Task 11 有完整步驟）。
 - Rust 每次 commit 前跑 `cargo fmt --all` 與 `cargo clippy --all-targets -- -D warnings`（CI 會用同樣的指令）。前端每次 commit 前跑 `pnpm check`。
+- **長時間指令要背景跑。** Bash 工具預設 2 分鐘、最多 10 分鐘就會被砍。第一次 `cargo build`、第一次 `cargo test`（9 個整合測試檔各自編譯）、`pnpm dlx sv@latest create`、`pnpm install` 都可能超過。這些指令用 `run_in_background: true` 執行，再用 Monitor 等它結束並讀輸出；不要在前景跑然後被時間砍掉當成失敗。`cargo run`、`pnpm dev` 這種伺服器也一律背景跑。
+- **「手動走一遍」步驟的處理。** 執行任務的人沒有瀏覽器。能用 `curl` 檢查的就用 curl 做（例如頁面 HTML 是否含某字串、robots/sitemap 內容）；要點按的步驟跳過，但**一定要在任務回報裡逐條列出哪些手動步驟沒做**，最後彙整給使用者驗收。跳過手動步驟不算任務失敗；自動測試（cargo test、pnpm test、pnpm check、pnpm build）沒過才算。
 
 ## 檔案結構（本計畫會建立的所有檔案）
 
