@@ -1,7 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use dog_shop_api::db;
+use anyhow::Context;
 use dog_shop_api::{app, config::Config, state::AppState};
+use dog_shop_api::{cli, db};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -18,6 +19,20 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::from_env()?);
     let db = db::connect(&config.database_url).await?;
     db::migrate(&db).await?;
+
+    // 子指令：cargo run -- create-admin <email>
+    let mut args = std::env::args().skip(1);
+    if let Some(command) = args.next() {
+        return match command.as_str() {
+            "create-admin" => {
+                let email = args
+                    .next()
+                    .context("用法：cargo run -- create-admin <email>")?;
+                cli::create_admin_interactive(&db, &email).await
+            }
+            other => anyhow::bail!("未知指令：{other}（可用：create-admin <email>）"),
+        };
+    }
 
     let state = AppState {
         db,
