@@ -1,0 +1,20 @@
+# Rust
+api/target/
+
+# Node / SvelteKit
+web/node_modules/
+web/.svelte-kit/
+web/build/
+web/test-results/
+
+# 環境變數與上傳檔
+.env
+.env.*
+!.env.example
+uploads/
+api/uploads/
+
+# 編輯器與系統
+.idea/
+.vscode/
+.DS_Store

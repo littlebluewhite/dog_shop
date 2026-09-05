@@ -1,0 +1,21 @@
+name: dog_shop
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: dog_shop
+      POSTGRES_PASSWORD: dog_shop
+      POSTGRES_DB: dog_shop
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dog_shop -d dog_shop"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  pgdata_dev: {}
