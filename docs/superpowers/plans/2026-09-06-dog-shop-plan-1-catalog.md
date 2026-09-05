@@ -69,11 +69,11 @@
 
 ## 環境事實（每個任務開始前都要知道）
 
-- 這台機器：macOS、zsh、Node 24.2、pnpm 10.32、Docker 29、Homebrew。**沒有 rustup、沒有 cargo**，Task 1 會裝。之後每個 cargo 指令若出現 `command not found: cargo`，先執行 `source "$HOME/.cargo/env"` 再跑一次。
+- 這台機器：macOS、zsh、Node 24.2、pnpm 10.32、Docker（OrbStack）、Homebrew。Task 1 已裝好 Rust 1.98.1（rustup，在 `~/.cargo`）。**這個 sandbox 的新 shell 找不到 `cargo`，而且拒絕 `source "$HOME/.cargo/env"`**：每個含 cargo 的指令一律寫成 `export PATH="$HOME/.cargo/bin:$PATH" && cd api && cargo ...`（已驗證可用）。下面任務裡的 `cd api && cargo ...` 都要這樣加前綴。
 - 工作目錄是 git worktree：`/Users/wilson08/IdeaProjects/dog_shop/.claude/worktrees/mvp-design`，分支 `worktree-mvp-design`。所有指令都從這裡跑（下面寫的相對路徑都以它為根）。
 - 這個環境的 shell 會拒絕「複雜」的 git 指令（`-C`、放在迴圈或 heredoc 裡）。commit 步驟一律寫成兩行純指令：`git add <檔案...>` 然後 `git commit -m "..."`。每次 Bash 呼叫都是新的 shell，環境變數不會留到下一次。
-- 本機有 Homebrew 的 PostgreSQL 14 **客戶端**（`psql`）；5432 埠可能被本機的 Postgres 服務占用。Task 1 會檢查；如果改用 5433，把本計畫所有指令裡的 `5432` 換成 `5433`。
-- 開發資料庫連線字串（下面所有測試指令都直接寫出來）：`postgres://dog_shop:dog_shop@localhost:5432/dog_shop`。`#[sqlx::test]` 從**行程環境變數** `DATABASE_URL` 讀連線（不會讀 `.env`），所以測試指令一律寫成 `DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop cargo test`。它會為每個測試建獨立的臨時資料庫並跑 `migrations/`（Docker 的 postgres 使用者是 superuser，有權限）。
+- 本機有 Homebrew 的 PostgreSQL 14 **客戶端**（`psql`）。**開發資料庫在 `localhost:5435`**（Task 1 發現 5432、5433、5434 都被別的專案的容器占用）。本計畫所有指令已改成 5435；只有 Task 17 的 GitHub Actions 仍是 5432，因為那是 CI 容器裡的埠。
+- 開發資料庫連線字串（下面所有測試指令都直接寫出來）：`postgres://dog_shop:dog_shop@localhost:5435/dog_shop`。`#[sqlx::test]` 從**行程環境變數** `DATABASE_URL` 讀連線（不會讀 `.env`），所以測試指令一律寫成 `DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test`。它會為每個測試建獨立的臨時資料庫並跑 `migrations/`（Docker 的 postgres 使用者是 superuser，有權限）。
 - `cargo run`（開發啟動）用 `dotenvy` 從目前目錄往上找 `.env`，所以根目錄的 `.env`（Task 1 從 `.env.example` 複製）會被 `cd api && cargo run` 讀到。
 - sqlx 0.9 的 feature：`FromRow` derive 在 `derive`；`#[sqlx::test]` 需要 `migrate`；runtime 用 `runtime-tokio`；TLS 用 `tls-rustls-ring`。
 - axum 0.8 路徑參數寫法是 `/api/products/{slug}`（大括號），不是 `:slug`。
@@ -187,7 +187,7 @@ web/
 - Create: `deploy/docker-compose.dev.yml`
 
 **Interfaces:**
-- Produces: 可用的 `cargo`；跑在 `localhost:5432` 的 PostgreSQL 17，帳密／資料庫都是 `dog_shop`；根目錄 `.env`（後面 `cargo run`、`pnpm dev` 都讀它）。
+- Produces: 可用的 `cargo`；跑在 `localhost:5435` 的 PostgreSQL 17，帳密／資料庫都是 `dog_shop`；根目錄 `.env`（後面 `cargo run`、`pnpm dev` 都讀它）。
 
 - [ ] **Step 1: 安裝 Rust（rustup 官方安裝器，非互動）**
 
@@ -229,7 +229,7 @@ api/uploads/
 
 ```dotenv
 # ── 資料庫（開發：deploy/docker-compose.dev.yml 的 db）──
-DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop
+DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop
 
 # ── 網址 ──
 # 對外網址。開發時是 Vite 的網址；要收綠界回呼時改成 cloudflared 給的 https 網址
@@ -288,7 +288,7 @@ services:
       POSTGRES_PASSWORD: dog_shop
       POSTGRES_DB: dog_shop
     ports:
-      - "5432:5432"
+      - "5435:5432"
     volumes:
       - pgdata_dev:/var/lib/postgresql/data
     healthcheck:
@@ -306,7 +306,7 @@ volumes:
 Run: `docker compose -f deploy/docker-compose.dev.yml up -d db`
 Then run: `docker compose -f deploy/docker-compose.dev.yml ps`
 Expected: `db` 的 STATUS 出現 `healthy`（剛啟動可能是 `health: starting`，過幾秒再跑一次 ps）。
-Then run: `psql postgres://dog_shop:dog_shop@localhost:5432/dog_shop -c 'select version();'`
+Then run: `psql postgres://dog_shop:dog_shop@localhost:5435/dog_shop -c 'select version();'`
 Expected: 一行 `PostgreSQL 17.x ...`。
 
 - [ ] **Step 9: Commit**
@@ -895,7 +895,7 @@ use sqlx::postgres::PgPoolOptions;
 async fn health_returns_ok_with_request_id() {
     // health 不碰資料庫，用 lazy 連線就好（不會真的連）
     let pool = PgPoolOptions::new()
-        .connect_lazy("postgres://dog_shop:dog_shop@localhost:5432/dog_shop")
+        .connect_lazy("postgres://dog_shop:dog_shop@localhost:5435/dog_shop")
         .unwrap();
     let app = common::app(pool);
     let (status, body, headers) = common::send(&app, common::req("GET", "/api/health", None, None)).await;
@@ -1154,13 +1154,13 @@ async fn migration_creates_catalog_tables(pool: PgPool) {
 
 - [ ] **Step 8: 跑測試（資料庫要先起來，見 Task 1 Step 8）**
 
-Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop cargo test`
+Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test`
 Expected: 全部 `ok`，包含 `public_settings_returns_shop` 與 `migration_creates_catalog_tables`。
 
 - [ ] **Step 9: 手動確認 `cargo run` 會跑 migration**
 
 Run（背景執行）: `cd api && cargo run`，等 log 出現 `api listening` 之後再跑下一行，看完把它停掉。
-Run: `psql postgres://dog_shop:dog_shop@localhost:5432/dog_shop -c '\dt'`
+Run: `psql postgres://dog_shop:dog_shop@localhost:5435/dog_shop -c '\dt'`
 Expected: 看到 `_sqlx_migrations`、`users`、`sessions`、`categories`、`products`、`product_images`、`product_variants`、`settings`。
 
 - [ ] **Step 10: 格式、lint、commit**
@@ -1484,7 +1484,7 @@ async fn rejects_short_password_and_bad_email(pool: PgPool) {
 
 - [ ] **Step 8: 跑測試**
 
-Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop cargo test`
+Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test`
 Expected: 全部 `ok`，新增 `auth::password::tests::*`（3 個）、`domain::users::tests::email_rules`、`creates_then_promotes_same_email`、`rejects_short_password_and_bad_email`。
 
 - [ ] **Step 9: 手動建一個開發用 admin（之後前端登入會用）**
@@ -1939,7 +1939,7 @@ async fn auth_routes_are_rate_limited(pool: PgPool) {
 
 - [ ] **Step 9: 跑測試**
 
-Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop cargo test`
+Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test`
 Expected: 全部 `ok`，新增 `auth::cookie::tests::*`（2 個）與 `tests/auth.rs` 的 4 個。
 若 `GovernorLayer::new(governor_conf)` 編譯錯誤說型別不對：把 `Arc::new(...)` 拿掉、直接傳 `GovernorConfigBuilder...finish().expect(...)` 的值，並在 `.limiter().clone()` 之後才移進 `new`。
 若 `error_handler` 抱怨回傳的 Response body 型別不合：把兩個 `.into_response()` 改成 `.into_response().map(axum::body::Body::new)`。
@@ -2083,7 +2083,7 @@ async fn get_without_marker_is_fine(pool: PgPool) {
 
 - [ ] **Step 5: 跑測試**
 
-Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop cargo test`
+Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test`
 Expected: 全部 `ok`，新增 `tests/csrf.rs` 的 4 個；既有的 auth 測試仍通過（`common::req` 已帶正確 header）。
 
 - [ ] **Step 6: 格式、lint、commit**
@@ -2455,7 +2455,7 @@ async fn bad_uuid_in_path_is_validation_error(pool: PgPool) {
 
 - [ ] **Step 6: 跑測試**
 
-Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop cargo test`
+Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test`
 Expected: 全部 `ok`，新增 `domain::categories::tests::*`（3 個）與 `tests/categories.rs` 的 4 個。
 
 - [ ] **Step 7: 格式、lint、commit**
@@ -3322,7 +3322,7 @@ async fn customer_is_forbidden(pool: PgPool) {
 
 - [ ] **Step 6: 跑測試**
 
-Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop cargo test`
+Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test`
 Expected: 全部 `ok`，新增 `domain::products::tests::*`（6 個）與 `tests/admin_products.rs` 的 4 個。
 
 - [ ] **Step 7: 格式、lint、commit**
@@ -3665,7 +3665,7 @@ async fn customer_cannot_upload(pool: PgPool) {
 
 - [ ] **Step 6: 跑測試**
 
-Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop cargo test`
+Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test`
 Expected: 全部 `ok`，新增 `storage::tests::*`（4 個）與 `tests/uploads.rs` 的 3 個。
 
 - [ ] **Step 7: 格式、lint、commit**
@@ -4029,7 +4029,7 @@ async fn detail_returns_active_variants_only(pool: PgPool) {
 
 - [ ] **Step 5: 跑測試**
 
-Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop cargo test`
+Run: `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test`
 Expected: 全部 `ok`，新增 `tests/products_public.rs` 的 3 個。
 
 - [ ] **Step 6: 格式、lint、commit**
@@ -6430,7 +6430,7 @@ jobs:
 
 - [ ] **Step 2: 本機用同樣的指令再確認一次（CI 沒法在本機跑，但指令要能過）**
 
-Run: `cd api && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop cargo test`
+Run: `cd api && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test`
 Expected: 全部通過。
 Run: `cd web && pnpm install --frozen-lockfile && pnpm check && pnpm test && pnpm build`
 Expected: 全部通過。
@@ -6449,7 +6449,7 @@ git commit -m "ci: GitHub Actions（api 與 web）"
 全部做完後，從乾淨狀態走一次（每一行都要成立）：
 
 1. `docker compose -f deploy/docker-compose.dev.yml up -d db` → healthy。
-2. `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5432/dog_shop cargo test` → 全綠（單元 + 9 個整合測試檔）。
+2. `cd api && DATABASE_URL=postgres://dog_shop:dog_shop@localhost:5435/dog_shop cargo test` → 全綠（單元 + 9 個整合測試檔）。
 3. `cd api && cargo run` → log 有 `api listening`；`curl -s localhost:8080/api/health` → `{"status":"ok"}`。
 4. `cd api && cargo run -- create-admin admin@example.com` 能建管理員。
 5. `cd web && pnpm test && pnpm check && pnpm build` → 全過。
