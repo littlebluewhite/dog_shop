@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { api, ApiError } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
@@ -11,8 +12,8 @@
 	let newSlug = $state('');
 	let confirmDeleteId = $state<string | null>(null);
 
-	// 每列可編輯的複本；伺服器資料重新載入時同步回來
-	let rows = $state<Category[]>(data.categories.map((c) => ({ ...c })));
+	// 每列可編輯的複本；伺服器資料重新載入時同步回來（untrack：初始值刻意只取一次）
+	let rows = $state<Category[]>(untrack(() => data.categories.map((c) => ({ ...c }))));
 	$effect(() => {
 		rows = data.categories.map((c) => ({ ...c }));
 	});
