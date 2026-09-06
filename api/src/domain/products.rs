@@ -292,7 +292,7 @@ pub async fn update(db: &PgPool, id: Uuid, input: ProductInput) -> Result<AdminP
     get_admin(db, id).await?.ok_or(ApiError::NotFound)
 }
 
-/// 圖片整組重建；規格有 id 的更新、沒有的新增、沒出現的刪除。
+/// 圖片整組重建；規格有 id 的更新、沒有的新增、沒出現的刪除（已被訂單引用的改為停用）。
 async fn write_images_and_variants(
     tx: &mut Transaction<'_, Postgres>,
     product_id: Uuid,
