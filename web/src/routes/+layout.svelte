@@ -1,12 +1,16 @@
 <script lang="ts">
 	import '../app.css';
+	import { onMount } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import favicon from '$lib/assets/favicon.svg';
+	import { cart } from '$lib/cart.svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
 	import type { LayoutProps } from './$types';
 
 	let { data, children }: LayoutProps = $props();
+
+	onMount(() => cart.load());
 
 	async function logout() {
 		await api('/api/auth/logout', { method: 'POST' });
@@ -25,6 +29,12 @@
 		<a href="/" class="text-lg font-bold">{data.shop.name}</a>
 		<nav class="ml-auto flex items-center gap-4 text-sm">
 			<a href="/products" class="hover:underline">全部商品</a>
+			<a href="/cart" class="hover:underline">
+				購物車
+				{#if cart.count > 0}
+					<span class="ml-1 rounded-full bg-gray-900 px-2 py-0.5 text-xs text-white">{cart.count}</span>
+				{/if}
+			</a>
 			{#if data.user}
 				{#if data.user.role === 'admin'}
 					<a href="/admin" class="hover:underline">後台</a>
