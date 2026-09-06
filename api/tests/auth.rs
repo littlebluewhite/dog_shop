@@ -149,6 +149,23 @@ async fn login_is_rate_limited(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn expired_session_is_401(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let cookie = common::admin_cookie(&app, &pool).await;
+    sqlx::query("UPDATE sessions SET expires_at = now() - interval '1 day'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, body, _) = common::send(
+        &app,
+        common::req("GET", "/api/auth/me", Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn me_is_not_rate_limited(pool: PgPool) {
     let app = common::app(pool.clone());
     let cookie = common::admin_cookie(&app, &pool).await;
