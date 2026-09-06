@@ -12,7 +12,7 @@
 	let confirmDeleteId = $state<string | null>(null);
 
 	// 每列可編輯的複本；伺服器資料重新載入時同步回來
-	let rows = $state<Category[]>([]);
+	let rows = $state<Category[]>(data.categories.map((c) => ({ ...c })));
 	$effect(() => {
 		rows = data.categories.map((c) => ({ ...c }));
 	});
