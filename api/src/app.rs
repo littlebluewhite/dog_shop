@@ -1,5 +1,12 @@
-use axum::{Router, extract::DefaultBodyLimit};
+use axum::{
+    Router,
+    extract::DefaultBodyLimit,
+    http::{HeaderValue, header::CACHE_CONTROL},
+};
+use tower::ServiceBuilder;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::{auth, routes, state::AppState};
@@ -10,12 +17,22 @@ pub const BODY_LIMIT_BYTES: usize = 10 * 1024 * 1024 + 64 * 1024;
 /// 組出整個 API。layer 的順序：後加的在外層，所以由外到內是
 /// DefaultBodyLimit → SetRequestId → PropagateRequestId → Trace → require_same_origin → handler。
 pub fn router(state: AppState) -> Router {
+    // 上傳的圖片直接由 api 提供；檔名含 uuid 所以可以長期快取（規格 §11）
+    let uploads = ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::overriding(
+            CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        ))
+        .service(ServeDir::new(&state.config.upload_dir));
+
     Router::new()
         .merge(routes::health::router())
         .merge(routes::settings::router())
         .merge(routes::auth::router())
         .merge(routes::categories::router())
         .merge(routes::admin_products::router())
+        .merge(routes::uploads::router())
+        .nest_service("/uploads", uploads)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::csrf::require_same_origin,
