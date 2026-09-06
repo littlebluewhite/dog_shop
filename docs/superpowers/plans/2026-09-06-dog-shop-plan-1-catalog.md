@@ -67,6 +67,7 @@
 6. **`INTERNAL` 錯誤的 request id** 放在回應 header `x-request-id`（`tower-http` request-id 層），不放進 JSON body。
 7. **速率限制的 key** 用 `SmartIpKeyExtractor`（先看 `X-Forwarded-For`／`X-Real-IP`，沒有才用連線 IP），因為正式環境前面永遠是 Caddy。測試請求一律帶 `X-Forwarded-For: 127.0.0.1`。
 8. **速率限制只套在 `/api/auth/login`**（規格 §11 寫 `/api/auth/*`）：§6.2 的 SSR 每個請求都由 web 伺服器打一次 `/api/auth/me`，來源 IP 固定，套在 `/api/auth/*` 會把所有管理員一起鎖住；限流的目的是防暴力登入，`/me`、`/logout` 不需要。
+9. **Session id 用 UUID v4，不是 UUID v7**（規格寫主鍵一律 UUID v7）。原因：v7 依時間排序、部分可預測，session 識別碼需要不可預測性，所以用 v4；資料表主鍵其餘照規格用 v7。
 
 ## 環境事實（每個任務開始前都要知道）
 
