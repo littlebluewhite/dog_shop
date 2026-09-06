@@ -62,6 +62,11 @@ pub fn is_valid_email(email: &str) -> bool {
         && !domain.contains('@')
 }
 
+/// 台灣手機：09 開頭共 10 碼數字（規格 §8.3）
+pub fn is_tw_mobile(phone: &str) -> bool {
+    phone.len() == 10 && phone.starts_with("09") && phone.bytes().all(|b| b.is_ascii_digit())
+}
+
 pub async fn find_by_email(db: &PgPool, email: &str) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as::<_, User>("SELECT * FROM users WHERE lower(email) = $1")
         .bind(normalize_email(email))
@@ -95,6 +100,52 @@ pub async fn create(
     .await
 }
 
+/// 前台註冊：role 固定 customer，phone 可選
+pub async fn create_customer(
+    db: &PgPool,
+    email: &str,
+    password_hash: &str,
+    name: &str,
+    phone: Option<&str>,
+) -> Result<User, sqlx::Error> {
+    sqlx::query_as::<_, User>(
+        "INSERT INTO users (id, email, password_hash, name, phone, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+    )
+    .bind(Uuid::now_v7())
+    .bind(normalize_email(email))
+    .bind(password_hash)
+    .bind(name)
+    .bind(phone)
+    .bind(ROLE_CUSTOMER)
+    .fetch_one(db)
+    .await
+}
+
+pub async fn update_profile(
+    db: &PgPool,
+    id: Uuid,
+    name: &str,
+    phone: Option<&str>,
+) -> Result<User, sqlx::Error> {
+    sqlx::query_as::<_, User>(
+        "UPDATE users SET name = $2, phone = $3, updated_at = now() WHERE id = $1 RETURNING *",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(phone)
+    .fetch_one(db)
+    .await
+}
+
+pub async fn set_password(db: &PgPool, id: Uuid, password_hash: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(password_hash)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 pub async fn set_password_and_role(
     db: &PgPool,
     id: Uuid,
@@ -121,5 +172,13 @@ mod tests {
         assert!(!is_valid_email("@b.co"));
         assert!(!is_valid_email("a b@c.co"));
         assert_eq!(normalize_email("  Boss@Example.COM "), "boss@example.com");
+    }
+
+    #[test]
+    fn mobile_rules() {
+        assert!(is_tw_mobile("0912345678"));
+        assert!(!is_tw_mobile("091234567"));
+        assert!(!is_tw_mobile("0212345678"));
+        assert!(!is_tw_mobile("09123456７8"));
     }
 }

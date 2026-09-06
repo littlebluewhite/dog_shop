@@ -114,3 +114,27 @@ pub async fn customer_cookie(app: &Router, pool: &PgPool) -> String {
         .unwrap();
     login(app, "user@test.local", "password123").await
 }
+
+/// 用註冊 API 建一個會員並回 cookie（Task 3 起可用）
+pub async fn register_cookie(app: &Router, email: &str, password: &str, name: &str) -> String {
+    let (status, body, headers) = send(
+        app,
+        req(
+            "POST",
+            "/api/auth/register",
+            None,
+            Some(json!({ "email": email, "password": password, "name": name })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "register failed: {body}");
+    headers
+        .get(header::SET_COOKIE)
+        .expect("set-cookie")
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
