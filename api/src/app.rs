@@ -8,7 +8,7 @@ use crate::{auth, routes, state::AppState};
 pub const BODY_LIMIT_BYTES: usize = 10 * 1024 * 1024 + 64 * 1024;
 
 /// 組出整個 API。layer 的順序：後加的在外層，所以由外到內是
-/// DefaultBodyLimit → SetRequestId → PropagateRequestId → Trace → handler。
+/// DefaultBodyLimit → SetRequestId → PropagateRequestId → Trace → require_same_origin → handler。
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(routes::health::router())

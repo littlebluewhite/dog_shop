@@ -70,3 +70,19 @@ async fn get_without_marker_is_fine(pool: PgPool) {
     let (status, _, _) = common::send(&app, request).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn exempt_ecpay_path_skips_check(pool: PgPool) {
+    let app = common::app(pool);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/ecpay/x")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ORIGIN, "https://evil.example")
+        .header("x-forwarded-for", "127.0.0.1")
+        .body(login_body())
+        .unwrap();
+    let (status, _, _) = common::send(&app, request).await;
+    assert_ne!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
