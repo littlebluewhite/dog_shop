@@ -10,7 +10,7 @@
 	let submitting = $state(false);
 
 	function safeRedirect(target: string | null, user: User): string {
-		if (target && target.startsWith('/') && !target.startsWith('//')) return target;
+		if (target && /^\/(?![\/\\])/.test(target)) return target;
 		return user.role === 'admin' ? '/admin' : '/';
 	}
 

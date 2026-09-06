@@ -5,7 +5,7 @@ import type { Category, Page, ProductListItem } from '$lib/types';
 export const load: PageServerLoad = async (event) => {
 	const sp = event.url.searchParams;
 	const qs = new URLSearchParams();
-	for (const key of ['q', 'category', 'sort', 'page']) {
+	for (const key of ['q', 'category', 'sort', 'page', 'per_page']) {
 		const value = sp.get(key);
 		if (value) qs.set(key, value);
 	}
