@@ -37,6 +37,7 @@ pub fn router(state: AppState) -> Router {
         .merge(routes::auth::router())
         .merge(routes::categories::router())
         .merge(routes::admin_products::router())
+        .merge(routes::products::router())
         .merge(routes::uploads::router())
         .nest_service("/uploads", uploads)
         .layer(axum::middleware::from_fn_with_state(

@@ -481,6 +481,156 @@ pub async fn list_admin(
     })
 }
 
+// ───── 公開（買家）查詢 ─────
+
+pub const SORT_OPTIONS: &[&str] = &["newest", "price_asc", "price_desc"];
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PublicListItem {
+    pub slug: String,
+    pub name: String,
+    pub price_min: i32,
+    pub price_max: i32,
+    pub image_thumb: Option<String>,
+    pub in_stock: bool,
+    #[serde(skip)]
+    pub total: i64,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct CategoryRef {
+    pub slug: String,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PublicImage {
+    pub path: String,
+    pub thumb_path: String,
+    pub alt: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PublicVariant {
+    pub id: Uuid,
+    pub option1_value: Option<String>,
+    pub option2_value: Option<String>,
+    pub price: i32,
+    pub compare_at_price: Option<i32>,
+    pub stock: i32,
+    pub image_path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PublicProduct {
+    pub id: Uuid,
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+    pub category: Option<CategoryRef>,
+    pub option1_name: Option<String>,
+    pub option2_name: Option<String>,
+    pub images: Vec<PublicImage>,
+    pub variants: Vec<PublicVariant>,
+}
+
+/// 買家列表：只有 active 且至少一個啟用規格的商品。價格範圍與庫存只算啟用的規格。
+/// sort 只接受 SORT_OPTIONS 裡的值（route 先驗證過），這裡用白名單組 ORDER BY。
+pub async fn list_public(
+    db: &PgPool,
+    q: Option<&str>,
+    category_slug: Option<&str>,
+    sort: &str,
+    page: i64,
+    per_page: i64,
+) -> Result<Page<PublicListItem>, ApiError> {
+    let order = match sort {
+        "price_asc" => "v.price_min ASC, p.created_at DESC",
+        "price_desc" => "v.price_max DESC, p.created_at DESC",
+        _ => "p.created_at DESC",
+    };
+    let sql = format!(
+        "SELECT p.slug, p.name, v.price_min, v.price_max, (v.stock_total > 0) AS in_stock,
+                (SELECT i.thumb_path FROM product_images i WHERE i.product_id = p.id ORDER BY i.sort_order, i.id LIMIT 1) AS image_thumb,
+                COUNT(*) OVER () AS total
+         FROM products p
+         JOIN LATERAL (
+            SELECT MIN(pv.price) AS price_min, MAX(pv.price) AS price_max, COALESCE(SUM(pv.stock), 0)::bigint AS stock_total
+            FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_active
+         ) v ON true
+         WHERE p.status = 'active'
+           AND v.price_min IS NOT NULL
+           AND ($1::text IS NULL OR p.name ILIKE '%' || $1 || '%')
+           AND ($2::text IS NULL OR p.category_id = (SELECT c.id FROM categories c WHERE c.slug = $2))
+         ORDER BY {order}, p.id DESC
+         LIMIT $3 OFFSET $4"
+    );
+    // sqlx 0.9 只接受 &'static str 或 AssertSqlSafe 包住的字串；order 來自上面的白名單，沒有使用者輸入
+    let items = sqlx::query_as::<_, PublicListItem>(sqlx::AssertSqlSafe(sql))
+        .bind(q)
+        .bind(category_slug)
+        .bind(per_page)
+        .bind((page - 1) * per_page)
+        .fetch_all(db)
+        .await?;
+    let total = items.first().map(|i| i.total).unwrap_or(0);
+    Ok(Page {
+        items,
+        total,
+        page,
+        per_page,
+    })
+}
+
+/// 買家商品頁：只回 active 商品、啟用的規格；規格的 image_path 由 image_id 對出來
+pub async fn get_public(db: &PgPool, slug: &str) -> Result<Option<PublicProduct>, ApiError> {
+    let Some(p) = sqlx::query_as::<_, ProductRow>(
+        "SELECT * FROM products WHERE slug = $1 AND status = 'active'",
+    )
+    .bind(slug)
+    .fetch_optional(db)
+    .await?
+    else {
+        return Ok(None);
+    };
+    let category = match p.category_id {
+        Some(category_id) => {
+            sqlx::query_as::<_, CategoryRef>("SELECT slug, name FROM categories WHERE id = $1")
+                .bind(category_id)
+                .fetch_optional(db)
+                .await?
+        }
+        None => None,
+    };
+    let images = sqlx::query_as::<_, PublicImage>(
+        "SELECT path, thumb_path, alt FROM product_images WHERE product_id = $1 ORDER BY sort_order, id",
+    )
+    .bind(p.id)
+    .fetch_all(db)
+    .await?;
+    let variants = sqlx::query_as::<_, PublicVariant>(
+        "SELECT v.id, v.option1_value, v.option2_value, v.price, v.compare_at_price, v.stock, i.path AS image_path
+         FROM product_variants v
+         LEFT JOIN product_images i ON i.id = v.image_id
+         WHERE v.product_id = $1 AND v.is_active
+         ORDER BY v.sort_order, v.id",
+    )
+    .bind(p.id)
+    .fetch_all(db)
+    .await?;
+    Ok(Some(PublicProduct {
+        id: p.id,
+        slug: p.slug,
+        name: p.name,
+        description: p.description,
+        category,
+        option1_name: p.option1_name,
+        option2_name: p.option2_name,
+        images,
+        variants,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
