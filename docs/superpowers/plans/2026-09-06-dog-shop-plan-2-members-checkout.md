@@ -3185,7 +3185,8 @@ struct SnapshotRow {
     image_path: Option<String>,
 }
 
-fn variant_label(option1: Option<&str>, option2: Option<&str>) -> String {
+/// 「雞肉 / S」；沒規格就是「預設」。Task 8 的 domain/cart.rs 也用
+pub fn variant_label(option1: Option<&str>, option2: Option<&str>) -> String {
     let label: Vec<&str> = [option1, option2].into_iter().flatten().collect();
     if label.is_empty() {
         "預設".to_string()
@@ -3905,18 +3906,6 @@ struct LineRow {
     image_thumb: Option<String>,
 }
 
-fn label(row: &LineRow) -> String {
-    let parts: Vec<&str> = [row.option1_value.as_deref(), row.option2_value.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect();
-    if parts.is_empty() {
-        "預設".to_string()
-    } else {
-        parts.join(" / ")
-    }
-}
-
 pub async fn check(db: &PgPool, items: &[OrderItemInput]) -> Result<CartCheck, ApiError> {
     let merged = orders::merge_items(items);
     if merged.len() > orders::MAX_LINES {
@@ -3963,7 +3952,10 @@ pub async fn check(db: &PgPool, items: &[OrderItemInput]) -> Result<CartCheck, A
                 }
                 CheckedLine {
                     variant_id,
-                    variant_label: label(&row),
+                    variant_label: orders::variant_label(
+                        row.option1_value.as_deref(),
+                        row.option2_value.as_deref(),
+                    ),
                     product_slug: row.product_slug,
                     product_name: row.product_name,
                     price: row.price,
