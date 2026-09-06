@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 
 /// 從環境變數讀進來的設定。測試會直接建構這個 struct，所以欄位都是 pub。
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Config {
     pub database_url: String,
     /// 對外網址，例如 http://localhost:5173 或 https://shop.example.com（結尾不帶 /）
@@ -12,6 +12,18 @@ pub struct Config {
     pub cookie_secure: bool,
     /// 圖片存放目錄
     pub upload_dir: PathBuf,
+}
+
+/// 手動實作：database_url 含 DB 密碼，不能被 {:?} 印出來（規格 §11）。
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("database_url", &"<redacted>")
+            .field("public_base_url", &self.public_base_url)
+            .field("cookie_secure", &self.cookie_secure)
+            .field("upload_dir", &self.upload_dir)
+            .finish()
+    }
 }
 
 impl Config {

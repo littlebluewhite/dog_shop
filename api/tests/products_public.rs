@@ -167,6 +167,18 @@ async fn list_filters_and_paging(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn huge_page_number_does_not_overflow(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let (status, body, _) = common::send(
+        &app,
+        common::req("GET", "/api/products?page=9223372036854775807", None, None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn detail_returns_active_variants_only(pool: PgPool) {
     let (app, _) = setup(&pool).await;
 

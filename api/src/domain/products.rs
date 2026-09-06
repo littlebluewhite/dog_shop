@@ -138,7 +138,7 @@ pub fn clean(value: &Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// page 至少 1；per_page 夾在 1..=max
+/// page 夾在 1..=10_000（上限避免 (page - 1) * per_page 溢位或變負數）；per_page 夾在 1..=max
 pub fn clamp_paging(
     page: Option<i64>,
     per_page: Option<i64>,
@@ -146,7 +146,7 @@ pub fn clamp_paging(
     max_per_page: i64,
 ) -> (i64, i64) {
     (
-        page.unwrap_or(1).max(1),
+        page.unwrap_or(1).clamp(1, 10_000),
         per_page.unwrap_or(default_per_page).clamp(1, max_per_page),
     )
 }
