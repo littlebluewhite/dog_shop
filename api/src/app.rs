@@ -15,6 +15,7 @@ pub fn router(state: AppState) -> Router {
         .merge(routes::settings::router())
         .merge(routes::auth::router())
         .merge(routes::categories::router())
+        .merge(routes::admin_products::router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::csrf::require_same_origin,
