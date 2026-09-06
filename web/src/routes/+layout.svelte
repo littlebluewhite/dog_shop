@@ -2,6 +2,7 @@
 	import '../app.css';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import favicon from '$lib/assets/favicon.svg';
 	import Toasts from '$lib/components/Toasts.svelte';
 	import type { LayoutProps } from './$types';
 
@@ -15,6 +16,7 @@
 </script>
 
 <svelte:head>
+	<link rel="icon" href={favicon} />
 	<title>{data.shop.name}</title>
 </svelte:head>
 
