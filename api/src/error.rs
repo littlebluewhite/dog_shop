@@ -5,7 +5,9 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use serde::Serialize;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 /// 所有 handler 的錯誤型別。回應格式固定為
 /// `{ "error": { "code", "message", "details" } }`（規格 §10）。
@@ -19,10 +21,23 @@ pub enum ApiError {
     Forbidden(&'static str),
     #[error("找不到資料")]
     NotFound,
+    /// 下單時庫存不足：列出每個不足的規格與目前可買數量（規格 §5、§10）
+    #[error("部分商品庫存不足")]
+    OutOfStock(Vec<ShortItem>),
+    #[error("超商取貨的商品金額不能超過 20,000 元，請改用宅配")]
+    CvsAmountLimit,
+    #[error("請先選擇取貨門市")]
+    CvsStoreRequired,
     #[error("請求太頻繁，請稍後再試")]
     RateLimited,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ShortItem {
+    pub variant_id: Uuid,
+    pub available: i32,
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
@@ -41,6 +56,9 @@ impl ApiError {
             Self::Unauthorized(_) => "UNAUTHORIZED",
             Self::Forbidden(_) => "FORBIDDEN",
             Self::NotFound => "NOT_FOUND",
+            Self::OutOfStock(_) => "OUT_OF_STOCK",
+            Self::CvsAmountLimit => "CVS_AMOUNT_LIMIT",
+            Self::CvsStoreRequired => "CVS_STORE_REQUIRED",
             Self::RateLimited => "RATE_LIMITED",
             Self::Internal(_) => "INTERNAL",
         }
@@ -52,6 +70,8 @@ impl ApiError {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
+            Self::OutOfStock(_) => StatusCode::CONFLICT,
+            Self::CvsAmountLimit | Self::CvsStoreRequired => StatusCode::BAD_REQUEST,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -64,6 +84,7 @@ impl IntoResponse for ApiError {
         let code = self.code();
         let (message, details) = match &self {
             Self::Validation { message, details } => (message.clone(), details.clone()),
+            Self::OutOfStock(items) => (self.to_string(), json!({ "items": items })),
             Self::Internal(err) => {
                 // 細節只進 log；request id 在回應 header x-request-id
                 tracing::error!(error = ?err, "internal error");
@@ -170,5 +191,23 @@ mod tests {
     #[test]
     fn empty_field_errors_is_ok() {
         assert!(FieldErrors::new().into_result().is_ok());
+    }
+
+    #[tokio::test]
+    async fn out_of_stock_envelope() {
+        let id = Uuid::now_v7();
+        let response = ApiError::OutOfStock(vec![ShortItem {
+            variant_id: id,
+            available: 2,
+        }])
+        .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let v = body_json(response).await;
+        assert_eq!(v["error"]["code"], "OUT_OF_STOCK");
+        assert_eq!(
+            v["error"]["details"]["items"][0]["variant_id"],
+            id.to_string()
+        );
+        assert_eq!(v["error"]["details"]["items"][0]["available"], 2);
     }
 }
