@@ -28,7 +28,8 @@ use crate::{
     state::AppState,
 };
 
-/// /api/auth/* 每個 IP 每分鐘 10 次（規格 §11）：burst 10，每 6 秒補 1 個。
+/// /api/auth/login 每個 IP 每分鐘 10 次（規格 §11）：burst 10，每 6 秒補 1 個。
+/// 只限制 login，/me 會被 SvelteKit SSR 每次請求呼叫，限制它會把同一 IP 的使用者鎖住。
 /// key 用 SmartIpKeyExtractor：先看 X-Forwarded-For / X-Real-IP（正式環境前面是 Caddy），沒有才用連線 IP。
 pub fn router() -> Router<AppState> {
     let governor_conf = Arc::new(
@@ -54,10 +55,9 @@ pub fn router() -> Router<AppState> {
     });
 
     Router::new()
-        .route("/api/auth/login", post(login))
+        .route("/api/auth/login", post(login).layer(governor_layer))
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
-        .layer(governor_layer)
 }
 
 #[derive(Deserialize)]

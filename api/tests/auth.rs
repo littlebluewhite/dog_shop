@@ -118,7 +118,7 @@ async fn missing_field_is_validation_error(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn auth_routes_are_rate_limited(pool: PgPool) {
+async fn login_is_rate_limited(pool: PgPool) {
     let app = common::app(pool);
     // burst 10：前 10 次都會被處理（401），第 11 次 429
     for _ in 0..10 {
@@ -146,4 +146,19 @@ async fn auth_routes_are_rate_limited(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body["error"]["code"], "RATE_LIMITED");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn me_is_not_rate_limited(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let cookie = common::admin_cookie(&app, &pool).await;
+    // /me 沒有掛 governor_layer，同一個 IP 打超過 burst_size(10) 次也不該 429
+    for _ in 0..12 {
+        let (status, _, _) = common::send(
+            &app,
+            common::req("GET", "/api/auth/me", Some(&cookie), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
 }
