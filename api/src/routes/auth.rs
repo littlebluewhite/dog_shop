@@ -29,7 +29,7 @@ use crate::{
 };
 
 /// `/api/auth/login|register|forgot|reset` 共用一個限流器：每個 IP 每分鐘 10 次（規格 §11）：burst 10，每 6 秒補 1 個。
-/// 只限制 login，/me 會被 SvelteKit SSR 每次請求呼叫，限制它會把同一 IP 的使用者鎖住。
+/// 只限制這四條，/me 會被 SvelteKit SSR 每次請求呼叫，限制它會把同一 IP 的使用者鎖住。
 /// key 用 SmartIpKeyExtractor：先看 X-Forwarded-For / X-Real-IP（正式環境前面是 Caddy），沒有才用連線 IP。
 pub fn router() -> Router<AppState> {
     let governor_conf = Arc::new(
