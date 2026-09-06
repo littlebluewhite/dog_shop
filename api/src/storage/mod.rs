@@ -6,7 +6,10 @@ use std::{
 };
 
 use chrono::{Datelike, Utc};
-use image::{DynamicImage, ImageError, codecs::jpeg::JpegEncoder, imageops::FilterType};
+use image::{
+    DynamicImage, ImageDecoder, ImageError, ImageReader, Limits, codecs::jpeg::JpegEncoder,
+    imageops::FilterType,
+};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -39,9 +42,22 @@ pub struct Encoded {
     pub height: u32,
 }
 
-/// 解碼 → 主圖最長邊 1600（小圖不放大）→ 縮圖最長邊 400 → 兩張都轉 JPEG（去透明層）
+/// 解碼（限制尺寸／記憶體、套用 EXIF 方向）→ 主圖最長邊 1600（小圖不放大）→ 縮圖最長邊 400
+/// → 兩張都轉 JPEG（去透明層）
 pub fn encode(bytes: &[u8]) -> Result<Encoded, ImageError> {
-    let decoded = image::load_from_memory(bytes)?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(256 << 20);
+    let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+    reader.limits(limits.clone());
+    let mut decoder = reader.into_decoder()?;
+    // into_decoder() 只檢查寬高，不像 decode() 會先 reserve() 檢查 max_alloc；補上這一步
+    // 避免一張寬高剛好在上限內、但像素資料仍超過 256 MiB 的圖片繞過記憶體上限。
+    limits.reserve(decoder.total_bytes())?;
+    let orientation = decoder.orientation()?;
+    let mut decoded = DynamicImage::from_decoder(decoder)?;
+    decoded.apply_orientation(orientation);
     let main = if decoded.width().max(decoded.height()) > MAIN_MAX_EDGE {
         decoded.resize(MAIN_MAX_EDGE, MAIN_MAX_EDGE, FilterType::Lanczos3)
     } else {
