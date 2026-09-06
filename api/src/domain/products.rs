@@ -293,7 +293,6 @@ pub async fn update(db: &PgPool, id: Uuid, input: ProductInput) -> Result<AdminP
 }
 
 /// 圖片整組重建；規格有 id 的更新、沒有的新增、沒出現的刪除。
-/// 計畫 2 建了 order_items 之後，這裡的刪除要改成：有訂單引用就 is_active=false，沒有才刪。
 async fn write_images_and_variants(
     tx: &mut Transaction<'_, Postgres>,
     product_id: Uuid,
@@ -394,11 +393,22 @@ async fn write_images_and_variants(
         };
         kept.push(variant_id);
     }
+    // 沒出現在 payload 的規格：有訂單引用就只停用（規格 §10），沒有才真刪
     for old in existing.iter().filter(|id| !kept.contains(id)) {
-        sqlx::query("DELETE FROM product_variants WHERE id = $1")
-            .bind(old)
-            .execute(&mut **tx)
-            .await?;
+        let deleted = sqlx::query(
+            "DELETE FROM product_variants
+             WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM order_items WHERE variant_id = $1)",
+        )
+        .bind(old)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        if deleted == 0 {
+            sqlx::query("UPDATE product_variants SET is_active = false WHERE id = $1")
+                .bind(old)
+                .execute(&mut **tx)
+                .await?;
+        }
     }
     Ok(())
 }

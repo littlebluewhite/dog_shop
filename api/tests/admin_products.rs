@@ -344,3 +344,79 @@ async fn customer_is_forbidden(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// 規格 §10：已有訂單的規格只能停用不能刪；沒訂單的照樣刪
+#[sqlx::test(migrations = "./migrations")]
+async fn variant_with_orders_is_deactivated_not_deleted(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let cookie = common::admin_cookie(&app, &pool).await;
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            "/api/admin/products",
+            Some(&cookie),
+            Some(sample_product("active")),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let ordered_variant = body["variants"][0]["id"].as_str().unwrap().to_string();
+    let free_variant = body["variants"][1]["id"].as_str().unwrap().to_string();
+    let kept_variant = body["variants"][2].clone();
+
+    // 直接塞一筆訂單引用第一個規格（訂單 API 在 Task 8 才有）
+    let order_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO orders (id, order_no, guest_token, email, recipient_name, recipient_phone, shipping_method,
+                             subtotal, shipping_fee, total, invoice_type)
+         VALUES ($1, 'DS260906TEST', 'tok', 'a@b.co', '王小明', '0912345678', 'home', 300, 100, 400, 'personal')",
+    )
+    .bind(order_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO order_items (id, order_id, variant_id, product_name, variant_label, unit_price, quantity, line_total)
+         VALUES ($1, $2, $3, '雞肉狗糧', '雞肉 / S', 300, 1, 300)",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(order_id)
+    .bind(uuid::Uuid::parse_str(&ordered_variant).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // PUT 只留第三個規格：第一個（有訂單）變 is_active=false 留著，第二個（沒訂單）真的被刪
+    let update = json!({
+        "name": "雞肉狗糧",
+        "status": "active",
+        "option1_name": "口味",
+        "option2_name": "尺寸",
+        "images": [],
+        "variants": [ {
+            "id": kept_variant["id"], "option1_value": "牛肉", "option2_value": "S", "price": 320, "stock": 2
+        } ]
+    });
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "PUT",
+            &format!("/api/admin/products/{id}"),
+            Some(&cookie),
+            Some(update),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let variants = body["variants"].as_array().unwrap();
+    assert_eq!(variants.len(), 2, "{body}");
+    let ordered = variants
+        .iter()
+        .find(|v| v["id"] == ordered_variant)
+        .expect("有訂單的規格還在");
+    assert_eq!(ordered["is_active"], false);
+    assert!(variants.iter().all(|v| v["id"] != free_variant));
+    assert!(variants.iter().any(|v| v["id"] == kept_variant["id"]));
+}
