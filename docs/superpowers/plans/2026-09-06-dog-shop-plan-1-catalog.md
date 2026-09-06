@@ -66,6 +66,7 @@
 5. **「已有訂單的規格只能停用不能刪」**（規格 §10）在本計畫還沒有 `order_items` 表，所以更新商品時沒出現在 payload 的規格會直接刪除。**計畫 2** 建 `order_items` 時要把 `domain/products.rs` 裡 `write_images_and_variants` 的刪除改成：先查 `order_items` 有沒有引用，有就 `is_active=false`、沒有才刪。這是計畫 2 的必做項。
 6. **`INTERNAL` 錯誤的 request id** 放在回應 header `x-request-id`（`tower-http` request-id 層），不放進 JSON body。
 7. **速率限制的 key** 用 `SmartIpKeyExtractor`（先看 `X-Forwarded-For`／`X-Real-IP`，沒有才用連線 IP），因為正式環境前面永遠是 Caddy。測試請求一律帶 `X-Forwarded-For: 127.0.0.1`。
+8. **速率限制只套在 `/api/auth/login`**（規格 §11 寫 `/api/auth/*`）：§6.2 的 SSR 每個請求都由 web 伺服器打一次 `/api/auth/me`，來源 IP 固定，套在 `/api/auth/*` 會把所有管理員一起鎖住；限流的目的是防暴力登入，`/me`、`/logout` 不需要。
 
 ## 環境事實（每個任務開始前都要知道）
 
