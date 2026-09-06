@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::DefaultBodyLimit,
-    http::{HeaderValue, Response, header::CACHE_CONTROL},
+    http::{HeaderValue, Request, Response, header::CACHE_CONTROL},
 };
 use tower::ServiceBuilder;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -44,7 +44,17 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             auth::csrf::require_same_origin,
         ))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|req: &Request<_>| {
+                // INFO 而非預設 DEBUG，這樣 RUST_LOG=info,tower_http=info 才會建立這個 span（帶 request id）。
+                tracing::info_span!(
+                    "request",
+                    method = %req.method(),
+                    path = %req.uri().path(),
+                    request_id = ?req.headers().get("x-request-id")
+                )
+            }),
+        )
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
