@@ -1,11 +1,12 @@
 use axum::{
     Router,
     extract::DefaultBodyLimit,
-    http::{HeaderValue, header::CACHE_CONTROL},
+    http::{HeaderValue, Response, header::CACHE_CONTROL},
 };
 use tower::ServiceBuilder;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::services::ServeDir;
+use tower_http::services::fs::ServeFileSystemResponseBody;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
@@ -17,11 +18,16 @@ pub const BODY_LIMIT_BYTES: usize = 10 * 1024 * 1024 + 64 * 1024;
 /// 組出整個 API。layer 的順序：後加的在外層，所以由外到內是
 /// DefaultBodyLimit → SetRequestId → PropagateRequestId → Trace → require_same_origin → handler。
 pub fn router(state: AppState) -> Router {
-    // 上傳的圖片直接由 api 提供；檔名含 uuid 所以可以長期快取（規格 §11）
+    // 上傳的圖片直接由 api 提供；檔名含 uuid 所以可以長期快取（規格 §11）。
+    // 只在成功回應加快取標頭，404 等錯誤不該被瀏覽器快取住。
     let uploads = ServiceBuilder::new()
         .layer(SetResponseHeaderLayer::overriding(
             CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=31536000, immutable"),
+            |res: &Response<ServeFileSystemResponseBody>| {
+                res.status()
+                    .is_success()
+                    .then(|| HeaderValue::from_static("public, max-age=31536000, immutable"))
+            },
         ))
         .service(ServeDir::new(&state.config.upload_dir));
 

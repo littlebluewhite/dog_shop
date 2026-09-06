@@ -1,14 +1,10 @@
-use axum::{
-    Json, Router,
-    extract::{Multipart, State},
-    http::StatusCode,
-    routing::post,
-};
+use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde_json::json;
 
 use crate::{
     auth::extract::AdminUser,
     error::{ApiError, ApiResult},
+    extract::AppMultipart,
     state::AppState,
     storage::{self, ALLOWED_MIME, MAX_UPLOAD_BYTES, StorageError, StoredImage},
 };
@@ -21,7 +17,7 @@ pub fn router() -> Router<AppState> {
 async fn upload(
     _admin: AdminUser,
     State(state): State<AppState>,
-    mut multipart: Multipart,
+    AppMultipart(mut multipart): AppMultipart,
 ) -> ApiResult<(StatusCode, Json<StoredImage>)> {
     while let Some(field) = multipart
         .next_field()

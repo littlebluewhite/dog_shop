@@ -112,3 +112,34 @@ async fn customer_cannot_upload(pool: PgPool) {
         common::send(&app, multipart(&cookie, "a.png", "image/png", &png(10, 10))).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn missing_upload_has_no_cache_header(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let request = Request::builder()
+        .method("GET")
+        .uri("/uploads/2020/01/does-not-exist.jpg")
+        .body(Body::empty())
+        .unwrap();
+    let response = tower::ServiceExt::oneshot(app, request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(response.headers().get(header::CACHE_CONTROL).is_none());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn non_multipart_upload_is_validation_error(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let cookie = common::admin_cookie(&app, &pool).await;
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            "/api/admin/uploads",
+            Some(&cookie),
+            Some(serde_json::json!({})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION");
+}

@@ -1,5 +1,5 @@
 //! 把 axum 內建擷取器的錯誤轉成我們的 JSON 錯誤格式。
-//! handler 一律用 AppJson / AppQuery / AppPath，不要直接用 axum::Json 等。
+//! handler 一律用 AppJson / AppQuery / AppPath / AppMultipart，不要直接用 axum::Json 等。
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts};
 use serde_json::json;
@@ -17,6 +17,13 @@ pub struct AppQuery<T>(pub T);
 #[derive(FromRequestParts)]
 #[from_request(via(axum::extract::Path), rejection(ApiError))]
 pub struct AppPath<T>(pub T);
+
+/// `axum::extract::Multipart` 本身不是泛型型別（不能寫成 `via(axum::extract::Multipart)`
+/// 產生的 `Multipart<Self>`），所以這裡不用 `via`，直接讓 derive 巨集用欄位自己的
+/// `FromRequest` 擷取，只是把 rejection 換成 `ApiError`。
+#[derive(FromRequest)]
+#[from_request(rejection(ApiError))]
+pub struct AppMultipart(pub axum::extract::Multipart);
 
 impl From<JsonRejection> for ApiError {
     fn from(rejection: JsonRejection) -> Self {
@@ -40,6 +47,15 @@ impl From<PathRejection> for ApiError {
     fn from(rejection: PathRejection) -> Self {
         ApiError::Validation {
             message: "網址參數格式錯誤".to_string(),
+            details: json!({ "detail": rejection.body_text() }),
+        }
+    }
+}
+
+impl From<axum::extract::multipart::MultipartRejection> for ApiError {
+    fn from(rejection: axum::extract::multipart::MultipartRejection) -> Self {
+        ApiError::Validation {
+            message: "請用 multipart/form-data 上傳".to_string(),
             details: json!({ "detail": rejection.body_text() }),
         }
     }
