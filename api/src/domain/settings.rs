@@ -122,13 +122,6 @@ impl AllSettings {
     }
 }
 
-pub async fn get(db: &PgPool, key: &str) -> Result<Option<Value>, sqlx::Error> {
-    sqlx::query_scalar::<_, Value>("SELECT value FROM settings WHERE key = $1")
-        .bind(key)
-        .fetch_optional(db)
-        .await
-}
-
 /// 壞掉或缺欄位的 JSON 一律退回預設值，設定頁永遠打得開
 fn parse<T: DeserializeOwned + Default>(value: Value) -> T {
     serde_json::from_value(value).unwrap_or_default()
