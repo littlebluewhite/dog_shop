@@ -26,7 +26,7 @@ use crate::{
 };
 
 /// `POST /api/orders` 是唯一開放給匿名者的寫入端點，未登入就能扣庫存；掛一個獨立的
-/// GovernorLayer 當減速帶（不與 auth 共用配額）：每個 IP 每秒 12、burst 10。
+/// GovernorLayer 當減速帶（不與 auth 共用配額）：每個 IP 突發 10 次，之後每 12 秒補 1 次（約 5 次/分）。
 /// GET /api/orders/{id}、cancel 不限（結構同 routes/auth.rs:33-58）。
 pub fn router() -> Router<AppState> {
     let governor_conf = Arc::new(
