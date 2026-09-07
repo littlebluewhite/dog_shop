@@ -3,6 +3,7 @@ pub mod admin_settings;
 pub mod auth;
 pub mod categories;
 pub mod health;
+pub mod me;
 pub mod products;
 pub mod settings;
 pub mod uploads;

@@ -1,3 +1,4 @@
+pub mod addresses;
 pub mod categories;
 pub mod jobs;
 pub mod password_resets;
