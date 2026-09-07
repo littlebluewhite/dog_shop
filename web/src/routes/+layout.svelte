@@ -39,6 +39,9 @@
 				{#if data.user.role === 'admin'}
 					<a href="/admin" class="hover:underline">後台</a>
 				{/if}
+				{#if data.user.role !== 'admin'}
+					<a href="/account" class="hover:underline">會員中心</a>
+				{/if}
 				<button type="button" class="hover:underline" onclick={logout}>登出</button>
 			{:else}
 				<a href="/login" class="hover:underline">登入</a>
