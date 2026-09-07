@@ -1,4 +1,5 @@
 pub mod addresses;
+pub mod cart;
 pub mod categories;
 pub mod cvs_stores;
 pub mod jobs;

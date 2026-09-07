@@ -10,10 +10,12 @@ use crate::{
     },
     domain::{
         addresses::{self, Address, AddressInput},
+        orders::{self, OrderSummary},
+        products::{self, Page},
         users,
     },
     error::{ApiError, ApiResult, FieldErrors},
-    extract::{AppJson, AppPath},
+    extract::{AppJson, AppPath, AppQuery},
     state::AppState,
 };
 
@@ -28,6 +30,7 @@ pub fn router() -> Router<AppState> {
             "/api/me/addresses/{id}",
             axum::routing::put(update_address).delete(delete_address),
         )
+        .route("/api/me/orders", get(list_orders))
 }
 
 async fn get_profile(AuthUser(user): AuthUser) -> Json<Value> {
@@ -125,4 +128,21 @@ async fn delete_address(
     } else {
         Err(ApiError::NotFound)
     }
+}
+
+#[derive(Deserialize)]
+pub struct OrdersQuery {
+    pub page: Option<i64>,
+    pub per_page: Option<i64>,
+}
+
+async fn list_orders(
+    AuthUser(user): AuthUser,
+    State(state): State<AppState>,
+    AppQuery(query): AppQuery<OrdersQuery>,
+) -> ApiResult<Json<Page<OrderSummary>>> {
+    let (page, per_page) = products::clamp_paging(query.page, query.per_page, 20, 50);
+    Ok(Json(
+        orders::list_for_user(&state.db, user.id, page, per_page).await?,
+    ))
 }

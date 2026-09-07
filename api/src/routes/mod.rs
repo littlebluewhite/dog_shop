@@ -1,9 +1,12 @@
 pub mod admin_products;
 pub mod admin_settings;
 pub mod auth;
+pub mod cart;
 pub mod categories;
+pub mod checkout;
 pub mod health;
 pub mod me;
+pub mod orders;
 pub mod products;
 pub mod settings;
 pub mod uploads;
