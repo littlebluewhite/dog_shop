@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 
-/// 從環境變數讀進來的設定。測試會直接建構這個 struct，所以欄位都是 pub。
+/// 從環境變數讀進來的設定。測試用 `Config::for_tests` 建構；欄位都是 pub。
 #[derive(Clone)]
 pub struct Config {
     pub database_url: String,
@@ -12,6 +12,10 @@ pub struct Config {
     pub cookie_secure: bool,
     /// 圖片存放目錄
     pub upload_dir: PathBuf,
+    /// 綠界（規格 §8）
+    pub ecpay: EcpayConfig,
+    /// SMTP；None 表示沒設定，Email 只記 log（與規格不同之處 22）
+    pub smtp: Option<SmtpConfig>,
 }
 
 /// 手動實作：database_url 含 DB 密碼，不能被 {:?} 印出來（規格 §11）。
@@ -22,8 +26,114 @@ impl std::fmt::Debug for Config {
             .field("public_base_url", &self.public_base_url)
             .field("cookie_secure", &self.cookie_secure)
             .field("upload_dir", &self.upload_dir)
+            .field("ecpay", &self.ecpay)
+            .field("smtp", &self.smtp)
             .finish()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EcpayEnv {
+    Stage,
+    Prod,
+}
+
+/// 一組綠界憑證。HashKey / HashIV 不能被 {:?} 印出來（規格 §11）
+#[derive(Clone)]
+pub struct EcpayCredentials {
+    pub merchant_id: String,
+    pub hash_key: String,
+    pub hash_iv: String,
+}
+
+impl std::fmt::Debug for EcpayCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EcpayCredentials")
+            .field("merchant_id", &self.merchant_id)
+            .field("hash_key", &"<redacted>")
+            .field("hash_iv", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EcpayConfig {
+    pub env: EcpayEnv,
+    pub aio: EcpayCredentials,
+    pub invoice: EcpayCredentials,
+}
+
+/// 全方位金流測試特店（規格 §8.5；公開資料，只能用於 stage）：(MerchantID, HashKey, HashIV)
+pub const STAGE_AIO: (&str, &str, &str) = ("3002607", "pwFHCqoQZGmho4w6", "EkRm7iFT261dpevs");
+/// 電子發票 B2C 測試特店（developers.ecpay.com.tw「測試介接資訊」）
+pub const STAGE_INVOICE: (&str, &str, &str) = ("2000132", "ejCk326UnaZWKisg", "q9jcZX8Ib9LM8wYk");
+
+impl EcpayConfig {
+    pub fn aio_checkout_url(&self) -> &'static str {
+        match self.env {
+            EcpayEnv::Stage => "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5",
+            EcpayEnv::Prod => "https://payment.ecpay.com.tw/Cashier/AioCheckOut/V5",
+        }
+    }
+
+    pub fn invoice_issue_url(&self) -> &'static str {
+        match self.env {
+            EcpayEnv::Stage => "https://einvoice-stage.ecpay.com.tw/B2CInvoice/Issue",
+            EcpayEnv::Prod => "https://einvoice.ecpay.com.tw/B2CInvoice/Issue",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SmtpConfig {
+    pub host: String,
+    /// 465 = 一開始就 TLS；其他（587、25）= STARTTLS
+    pub port: u16,
+    pub user: Option<String>,
+    pub pass: Option<String>,
+    /// 寄件人，例如 `狗狗商店 <no-reply@example.com>` 或純地址
+    pub from: String,
+}
+
+impl std::fmt::Debug for SmtpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("pass", &self.pass.as_ref().map(|_| "<redacted>"))
+            .field("from", &self.from)
+            .finish()
+    }
+}
+
+/// 讀環境變數，去頭尾空白，空字串當沒設
+fn env_trimmed(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// 讀一組憑證：stage 時空值退回公開測試憑證；prod 時三個都必填（與規格不同之處 24）
+fn credentials(
+    prefix: &str,
+    env: EcpayEnv,
+    stage: (&str, &str, &str),
+) -> anyhow::Result<EcpayCredentials> {
+    let read = |suffix: &str, fallback: &str| -> anyhow::Result<String> {
+        let name = format!("{prefix}_{suffix}");
+        match (env_trimmed(&name), env) {
+            (Some(value), _) => Ok(value),
+            (None, EcpayEnv::Stage) => Ok(fallback.to_string()),
+            (None, EcpayEnv::Prod) => anyhow::bail!("ECPAY_ENV=prod 時必須設定 {name}"),
+        }
+    };
+    Ok(EcpayCredentials {
+        merchant_id: read("MERCHANT_ID", stage.0)?,
+        hash_key: read("HASH_KEY", stage.1)?,
+        hash_iv: read("HASH_IV", stage.2)?,
+    })
 }
 
 impl Config {
@@ -42,12 +152,64 @@ impl Config {
         };
         let upload_dir =
             PathBuf::from(std::env::var("UPLOAD_DIR").unwrap_or_else(|_| "./uploads".to_string()));
+
+        let ecpay_env = match env_trimmed("ECPAY_ENV").as_deref() {
+            None | Some("stage") => EcpayEnv::Stage,
+            Some("prod") => EcpayEnv::Prod,
+            Some(other) => anyhow::bail!("ECPAY_ENV 只能是 stage 或 prod，收到 {other}"),
+        };
+        let ecpay = EcpayConfig {
+            env: ecpay_env,
+            aio: credentials("ECPAY_AIO", ecpay_env, STAGE_AIO)?,
+            invoice: credentials("ECPAY_INVOICE", ecpay_env, STAGE_INVOICE)?,
+        };
+
+        let smtp = match env_trimmed("SMTP_HOST") {
+            None => None,
+            Some(host) => Some(SmtpConfig {
+                host,
+                port: env_trimmed("SMTP_PORT")
+                    .map(|p| p.parse::<u16>().context("SMTP_PORT 要是 1～65535 的數字"))
+                    .transpose()?
+                    .unwrap_or(587),
+                user: env_trimmed("SMTP_USER"),
+                pass: env_trimmed("SMTP_PASS"),
+                from: env_trimmed("SMTP_FROM").context("有 SMTP_HOST 就必須設定 SMTP_FROM")?,
+            }),
+        };
+
         Ok(Self {
             database_url,
             public_base_url,
             cookie_secure,
             upload_dir,
+            ecpay,
+            smtp,
         })
+    }
+
+    /// 測試用：stage 憑證、沒有 SMTP、對外網址 http://localhost:5173、cookie 不加 Secure
+    pub fn for_tests(upload_dir: PathBuf) -> Self {
+        Self {
+            database_url: String::new(),
+            public_base_url: "http://localhost:5173".to_string(),
+            cookie_secure: false,
+            upload_dir,
+            ecpay: EcpayConfig {
+                env: EcpayEnv::Stage,
+                aio: EcpayCredentials {
+                    merchant_id: STAGE_AIO.0.to_string(),
+                    hash_key: STAGE_AIO.1.to_string(),
+                    hash_iv: STAGE_AIO.2.to_string(),
+                },
+                invoice: EcpayCredentials {
+                    merchant_id: STAGE_INVOICE.0.to_string(),
+                    hash_key: STAGE_INVOICE.1.to_string(),
+                    hash_iv: STAGE_INVOICE.2.to_string(),
+                },
+            },
+            smtp: None,
+        }
     }
 
     /// 只留 scheme://host[:port]，用來和瀏覽器送來的 Origin header 比對
@@ -70,10 +232,8 @@ mod tests {
 
     fn cfg(base: &str) -> Config {
         Config {
-            database_url: String::new(),
             public_base_url: base.to_string(),
-            cookie_secure: false,
-            upload_dir: PathBuf::from("/tmp"),
+            ..Config::for_tests(PathBuf::from("/tmp"))
         }
     }
 
@@ -86,6 +246,56 @@ mod tests {
         assert_eq!(
             cfg("http://localhost:5173").public_origin(),
             "http://localhost:5173"
+        );
+    }
+
+    #[test]
+    fn debug_redacts_secrets() {
+        let mut cfg = Config::for_tests(PathBuf::from("/tmp"));
+        cfg.database_url = "postgres://u:dbpass@h/db".to_string();
+        cfg.smtp = Some(SmtpConfig {
+            host: "smtp.example.com".to_string(),
+            port: 587,
+            user: Some("mailer".to_string()),
+            pass: Some("mailpass".to_string()),
+            from: "shop@example.com".to_string(),
+        });
+        let text = format!("{cfg:?}");
+        for secret in [
+            "dbpass",
+            "mailpass",
+            STAGE_AIO.1,
+            STAGE_AIO.2,
+            STAGE_INVOICE.1,
+            STAGE_INVOICE.2,
+        ] {
+            assert!(!text.contains(secret), "{secret} 出現在 Debug 輸出：{text}");
+        }
+        assert!(text.contains("3002607"));
+        assert!(text.contains("2000132"));
+        assert!(text.contains("smtp.example.com"));
+        assert!(text.contains("mailer"));
+    }
+
+    #[test]
+    fn urls_follow_env() {
+        let mut cfg = Config::for_tests(PathBuf::from("/tmp"));
+        assert_eq!(
+            cfg.ecpay.aio_checkout_url(),
+            "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5"
+        );
+        assert_eq!(
+            cfg.ecpay.invoice_issue_url(),
+            "https://einvoice-stage.ecpay.com.tw/B2CInvoice/Issue"
+        );
+        cfg.ecpay.env = EcpayEnv::Prod;
+        assert_eq!(
+            cfg.ecpay.aio_checkout_url(),
+            "https://payment.ecpay.com.tw/Cashier/AioCheckOut/V5"
+        );
+        assert_eq!(
+            cfg.ecpay.invoice_issue_url(),
+            "https://einvoice.ecpay.com.tw/B2CInvoice/Issue"
         );
     }
 }

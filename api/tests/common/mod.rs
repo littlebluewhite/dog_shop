@@ -15,18 +15,13 @@ use tower::ServiceExt;
 
 pub const TEST_ORIGIN: &str = "http://localhost:5173";
 
-/// 每個測試一個獨立的上傳目錄，避免互相干擾
+/// 每個測試一個獨立的上傳目錄，避免互相干擾；設定用 Config::for_tests（stage 憑證、沒有 SMTP）
 pub fn state(pool: PgPool) -> AppState {
     let upload_dir = std::env::temp_dir().join(format!("dog_shop_test_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&upload_dir).unwrap();
     AppState {
         db: pool,
-        config: Arc::new(Config {
-            database_url: String::new(),
-            public_base_url: TEST_ORIGIN.to_string(),
-            cookie_secure: false,
-            upload_dir,
-        }),
+        config: Arc::new(Config::for_tests(upload_dir)),
     }
 }
 
