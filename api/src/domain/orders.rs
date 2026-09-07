@@ -508,7 +508,9 @@ pub async fn create_order(
     let input = input.normalized();
     let settings = settings::get_all(db).await?;
     validate_input(&input, &settings.payment_methods)?;
-    let items = merge_items(&input.items);
+    let mut items = merge_items(&input.items);
+    // 依 variant_id 排序再逐筆鎖定：讓所有交易的鎖定順序一致，避免死鎖
+    items.sort_by_key(|(variant_id, _)| *variant_id);
 
     let mut tx = db.begin().await?;
 
@@ -633,7 +635,12 @@ pub async fn create_order(
         .await?;
     }
 
-    let address = input.address.as_ref();
+    // 只有宅配才寫入地址；超商訂單即使 payload 帶了 address 也不能寫進 shipments（與 cvs_store 同樣的閘門）
+    let address = if input.shipping_method == SHIPPING_HOME {
+        input.address.as_ref()
+    } else {
+        None
+    };
     sqlx::query(
         "INSERT INTO shipments (id, order_id, method, cvs_sub_type, cvs_store_id, cvs_store_name, cvs_store_address, cvs_store_phone,
                                 home_postal_code, home_city, home_district, home_street)

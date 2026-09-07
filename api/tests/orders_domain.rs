@@ -229,9 +229,22 @@ async fn cvs_order_needs_store_and_respects_limit(pool: PgPool) {
     assert_eq!(stock_of(&pool, variant).await, 10, "沒門市不該扣庫存");
 
     let token = common::cvs_store_token(&pool).await;
-    let created = orders::create_order(&pool, input(vec![(variant, 1)], "cvs", Some(token)), None)
-        .await
-        .unwrap();
+    // payload 也帶了宅配地址：超商訂單即使收到 address 也不該寫進 shipments 的 home_* 欄位（fix round 1）
+    let created = orders::create_order(
+        &pool,
+        OrderInput {
+            address: Some(HomeAddress {
+                postal_code: "100".to_string(),
+                city: "臺北市".to_string(),
+                district: "中正區".to_string(),
+                street: "重慶南路一段 122 號".to_string(),
+            }),
+            ..input(vec![(variant, 1)], "cvs", Some(token))
+        },
+        None,
+    )
+    .await
+    .unwrap();
     let detail =
         orders::get_for_viewer(&pool, created.order_id, &Viewer::Guest(created.guest_token))
             .await
@@ -242,6 +255,13 @@ async fn cvs_order_needs_store_and_respects_limit(pool: PgPool) {
     assert_eq!(shipment.cvs_sub_type.as_deref(), Some("UNIMARTC2C"));
     assert_eq!(shipment.cvs_store_name.as_deref(), Some("測試門市"));
     assert!(shipment.home_city.is_none());
+    let home_city: Option<String> =
+        sqlx::query_scalar("SELECT home_city FROM shipments WHERE order_id = $1")
+            .bind(created.order_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(home_city.is_none(), "超商訂單不該寫入宅配地址");
 
     // 小計超過 20,000 → CVS_AMOUNT_LIMIT，庫存 rollback
     let (pricey, _) = common::active_product(&pool, "貴", 25_000, 2).await;
