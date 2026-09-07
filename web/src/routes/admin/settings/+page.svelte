@@ -22,10 +22,18 @@
 		errors = {};
 		saving = true;
 		try {
-			const saved = await api<AllSettings>('/api/admin/settings', { method: 'PUT', body: JSON.stringify(form) });
+			const body: AllSettings = {
+				...form,
+				shipping: {
+					cvs_fee: Math.round(Number(form.shipping.cvs_fee) || 0),
+					home_fee: Math.round(Number(form.shipping.home_fee) || 0),
+					free_threshold: Math.round(Number(form.shipping.free_threshold) || 0)
+				}
+			};
+			const saved = await api<AllSettings>('/api/admin/settings', { method: 'PUT', body: JSON.stringify(body) });
 			form = saved;
-			await invalidateAll();
 			toast.show('已儲存');
+			await invalidateAll();
 		} catch (err) {
 			if (err instanceof ApiError) {
 				errors = err.fields();
