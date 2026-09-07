@@ -16,7 +16,7 @@ export function isPostalCode(code: string): boolean {
 
 /** 超商取貨收件人：2～5 個中文字 */
 export function isCvsRecipientName(name: string): boolean {
-	return /^[一-鿿]{2,5}$/.test(name);
+	return /^[\u4e00-\u9fff]{2,5}$/.test(name);
 }
 
 /** 手機條碼載具：/ 開頭 + 7 碼（0-9、A-Z、+、-、.） */
