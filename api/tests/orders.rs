@@ -322,6 +322,7 @@ async fn create_returns_ecpay_form_with_valid_mac(pool: PgPool) {
     let order_no = created["order_no"].as_str().unwrap();
     let token = created["guest_token"].as_str().unwrap();
 
+    assert!(!created["ecpay"].is_null(), "{created}");
     assert_eq!(
         created["ecpay"]["action"],
         "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5"
@@ -385,6 +386,7 @@ async fn member_checkout_back_url_has_no_token(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["order_id"].as_str().unwrap();
+    assert!(!created["ecpay"].is_null(), "{created}");
     assert_eq!(
         created["ecpay"]["fields"]["ClientBackURL"],
         format!("{}/orders/{id}", common::TEST_ORIGIN)

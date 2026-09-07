@@ -59,12 +59,14 @@ pub fn router() -> Router<AppState> {
         .route("/api/orders/{id}/cancel", post(cancel))
 }
 
-/// 規格 §7 第 6 點的回應：訂單資料 + 送往綠界的表單（與規格不同之處 23）
+/// 規格 §7 第 6 點的回應：訂單資料 + 送往綠界的表單（與規格不同之處 23）。
+/// `ecpay` 只有在訂單已經建立、但事後組表單失敗時才會是 null；這時前端要把買家導去訂單頁，
+/// 用 Task 7 的重新付款
 #[derive(Serialize)]
 pub struct CreateOrderResponse {
     #[serde(flatten)]
     pub created: OrderCreated,
-    pub ecpay: CheckoutForm,
+    pub ecpay: Option<CheckoutForm>,
 }
 
 /// 讀完整訂單與最新一筆付款，組綠界表單。create 與 repay（Task 7）共用。
@@ -94,7 +96,10 @@ async fn checkout_form_for(
     .map_err(ApiError::Internal)
 }
 
-/// 會員或訪客都能下單（規格 §7）；登入者的訂單掛在帳號下。回應含送往綠界的表單欄位
+/// 會員或訪客都能下單（規格 §7）；登入者的訂單掛在帳號下。回應含送往綠界的表單欄位；
+/// 訂單一旦建立（庫存已扣、email job 已排），組表單失敗不能讓這次請求整個失敗——不然客戶端重試
+/// 會再呼叫一次 create_order，庫存被扣兩次、多出一筆重複訂單。所以這裡失敗只記 log，ecpay 回
+/// null，前端導去訂單頁用 Task 7 的重新付款
 async fn create(
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
@@ -102,7 +107,17 @@ async fn create(
 ) -> ApiResult<(StatusCode, Json<CreateOrderResponse>)> {
     let created = orders::create_order(&state.db, input, user.as_ref()).await?;
     let guest_token = user.is_none().then_some(created.guest_token.as_str());
-    let ecpay = checkout_form_for(&state, created.order_id, guest_token).await?;
+    let ecpay = match checkout_form_for(&state, created.order_id, guest_token).await {
+        Ok(form) => Some(form),
+        Err(e) => {
+            tracing::error!(
+                order_id = %created.order_id,
+                error = %e,
+                "下單成功但組綠界表單失敗，回傳訂單不帶表單"
+            );
+            None
+        }
+    };
     Ok((
         StatusCode::CREATED,
         Json(CreateOrderResponse { created, ecpay }),
