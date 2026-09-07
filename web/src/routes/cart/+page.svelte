@@ -31,12 +31,12 @@
 					image_thumb: item.image_thumb,
 					product_slug: item.product_slug
 				});
-				if (item.qty !== cart.lines.find((l) => l.variant_id === item.variant_id)?.qty) {
-					cart.setQty(item.variant_id, item.qty);
-				}
+				const local = cart.lines.find((l) => l.variant_id === item.variant_id)?.qty;
+				if (local !== undefined && local > item.stock) cart.setQty(item.variant_id, item.stock);
 			}
 			checked = res;
 		} catch {
+			checked = null;
 			toast.show('無法確認庫存，請稍後再試');
 		} finally {
 			checking = false;
@@ -51,7 +51,7 @@
 		}
 	});
 
-	const problems = $derived(checked?.items.filter((i) => !i.available) ?? []);
+	const problems = $derived((checked?.items ?? []).filter((i) => !i.available && cart.lines.some((l) => l.variant_id === i.variant_id)));
 	function problemOf(variant_id: string) {
 		return checked?.items.find((i) => i.variant_id === variant_id);
 	}
@@ -59,7 +59,7 @@
 		for (const p of problems) cart.remove(p.variant_id);
 		void validate();
 	}
-	const canCheckout = $derived(cart.lines.length > 0 && !checking && problems.length === 0);
+	const canCheckout = $derived(cart.lines.length > 0 && !checking && checked !== null && problems.length === 0);
 </script>
 
 <svelte:head><title>購物車</title></svelte:head>
@@ -107,7 +107,7 @@
 						class="w-14 rounded border border-gray-300 px-2 py-1 text-center"
 						aria-label="數量"
 					/>
-					<button type="button" class="h-8 w-8 rounded border border-gray-300" onclick={() => cart.setQty(line.variant_id, line.qty + 1)} aria-label="增加">+</button>
+					<button type="button" class="h-8 w-8 rounded border border-gray-300" onclick={() => cart.setQty(line.variant_id, Math.min(line.qty + 1, p?.available ? p.stock : 99))} aria-label="增加">+</button>
 				</div>
 				<div class="w-24 text-right font-medium">{twd(line.price * line.qty)}</div>
 				<button type="button" class="text-sm text-gray-500 hover:text-red-600" onclick={() => cart.remove(line.variant_id)}>移除</button>
