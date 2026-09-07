@@ -24,6 +24,8 @@
 	let store = $state<CvsStore | null>(untrack(() => data.store));
 	let checked = $state<CartValidateResponse | null>(null);
 	let checking = $state(false);
+	let checkFailed = $state(false);
+	let reduced = $state<{ name: string; qty: number }[]>([]);
 	let errors = $state<Record<string, string>>({});
 	let submitting = $state(false);
 	let selectedAddressId = $state('');
@@ -35,6 +37,8 @@
 	const total = $derived(subtotal + fee);
 
 	async function validateCart() {
+		checkFailed = false;
+		reduced = [];
 		if (cart.lines.length === 0) {
 			checked = null;
 			return;
@@ -49,9 +53,13 @@
 				if (item.available && item.qty !== cart.lines.find((l) => l.variant_id === item.variant_id)?.qty) {
 					cart.setQty(item.variant_id, item.qty);
 				}
+				if (item.reason === 'qty_reduced') {
+					reduced.push({ name: item.product_name, qty: item.qty });
+				}
 			}
 			checked = res;
 		} catch {
+			checkFailed = true;
 			toast.show('無法確認庫存，請稍後再試');
 		} finally {
 			checking = false;
@@ -115,6 +123,7 @@
 			return;
 		}
 		submitting = true;
+		let target: string | null = null;
 		try {
 			const body = toOrderInput(
 				form,
@@ -128,11 +137,12 @@
 			} catch {
 				// ignore
 			}
-			await goto(data.user ? `/orders/${created.order_id}` : `/orders/${created.order_id}?t=${created.guest_token}`);
+			target = data.user ? `/orders/${created.order_id}` : `/orders/${created.order_id}?t=${created.guest_token}`;
 		} catch (err) {
 			if (err instanceof ApiError && err.code === 'VALIDATION') {
 				errors = err.fields();
-				toast.show(Object.keys(errors).length > 0 ? '請檢查紅字欄位' : err.message);
+				const first = Object.values(errors)[0];
+				toast.show(first ? '請檢查紅字欄位：' + first : err.message);
 			} else if (err instanceof ApiError && err.code === 'OUT_OF_STOCK') {
 				toast.show('部分商品庫存不足，已重新確認，請檢查數量');
 				await validateCart();
@@ -144,6 +154,7 @@
 		} finally {
 			submitting = false;
 		}
+		if (target) await goto(target);
 	}
 
 	const input = 'mt-1 w-full rounded border border-gray-300 px-3 py-2';
@@ -275,9 +286,20 @@
 			{#if checked && checked.items.some((i) => !i.available)}
 				<p class="text-red-600">有商品無法購買，請回<a href="/cart" class="underline">購物車</a>處理。</p>
 			{/if}
-			<div class="flex justify-between"><span>商品小計</span><span>{twd(subtotal)}</span></div>
-			<div class="flex justify-between"><span>運費</span><span>{fee === 0 ? '免運' : twd(fee)}</span></div>
-			<div class="flex justify-between text-base font-bold"><span>總計</span><span>{twd(total)}</span></div>
+			{#each reduced as r, i (i)}
+				<p class="text-yellow-700">{r.name} 庫存不足，數量已調整為 {r.qty}</p>
+			{/each}
+			{#if checkFailed}
+				<p class="text-red-600">無法確認庫存，請重新確認</p>
+				<button type="button" onclick={validateCart} disabled={checking} class="w-full rounded border border-gray-300 px-3 py-2 disabled:opacity-50">
+					重新確認庫存
+				</button>
+			{/if}
+			{#if checked}
+				<div class="flex justify-between"><span>商品小計</span><span>{twd(subtotal)}</span></div>
+				<div class="flex justify-between"><span>運費</span><span>{fee === 0 ? '免運' : twd(fee)}</span></div>
+				<div class="flex justify-between text-base font-bold"><span>總計</span><span>{twd(total)}</span></div>
+			{/if}
 			<button type="submit" disabled={submitting || checking || lines.length === 0} class="w-full rounded bg-gray-900 px-4 py-2 text-white disabled:opacity-50">
 				{submitting ? '送出中…' : '送出訂單'}
 			</button>

@@ -50,4 +50,18 @@ describe('checkout form', () => {
 		expect(cvs.cvs_store_token).toBe('tok');
 		expect(cvs.address).toBeNull();
 	});
+
+	it('toOrderInput drops carrier_num for the 綠界會員載具 carrier type', () => {
+		const f = homeForm();
+		f.invoice = { type: 'personal', carrier_type: '1', carrier_num: '/abc+123', tax_id: '', title: '', address: '', love_code: '' };
+		const body = toOrderInput(f, [{ variant_id: 'v1', qty: 1 }], null);
+		expect(body.invoice).toEqual({ type: 'personal', carrier_type: '1', carrier_num: undefined });
+	});
+
+	it('toOrderInput for a donation invoice sends only the love code', () => {
+		const f = homeForm();
+		f.invoice = { type: 'donation', carrier_type: '1', carrier_num: '', tax_id: '', title: '', address: '', love_code: '123' };
+		const body = toOrderInput(f, [{ variant_id: 'v1', qty: 1 }], null);
+		expect(body.invoice).toEqual({ type: 'donation', love_code: '123' });
+	});
 });
