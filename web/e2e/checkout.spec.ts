@@ -23,7 +23,7 @@ async function seedProduct(request: APIRequestContext): Promise<{ slug: string; 
 	return { slug: body.slug, name };
 }
 
-test('瀏覽 → 加入購物車 → 結帳（宅配）→ 訂單頁', async ({ page, request }) => {
+test('瀏覽 → 加入購物車 → 結帳（宅配）→ 送往綠界的表單 → 訂單頁', async ({ page, request }) => {
 	const product = await seedProduct(request);
 
 	await page.goto(`/products/${product.slug}`);
@@ -50,11 +50,38 @@ test('瀏覽 → 加入購物車 → 結帳（宅配）→ 訂單頁', async ({ 
 	await expect(page.getByLabel('郵遞區號')).toHaveValue('100');
 	await page.getByLabel('地址').fill('重慶南路一段 122 號');
 	await expect(page.getByText('總計')).toBeVisible();
-	await page.getByRole('button', { name: '送出訂單' }).click();
 
-	await expect(page).toHaveURL(/\/orders\/[0-9a-f-]{36}\?t=[0-9a-f]{64}$/);
+	// 攔截送往綠界的頂層表單 POST：不真的去綠界，回一頁假的；欄位用 postData 檢查（規格 §15）
+	await page.route('https://payment-stage.ecpay.com.tw/**', (route) =>
+		route.fulfill({
+			status: 200,
+			contentType: 'text/html; charset=utf-8',
+			body: '<!doctype html><title>ECPay stub</title><p>ECPay stub</p>'
+		})
+	);
+	const ecpayRequest = page.waitForRequest(
+		(r) => r.url().includes('/Cashier/AioCheckOut/V5') && r.method() === 'POST'
+	);
+	await page.getByRole('button', { name: '送出訂單' }).click();
+	const fields = new URLSearchParams((await ecpayRequest).postData() ?? '');
+	expect(fields.get('MerchantID')).toBe('3002607');
+	expect(fields.get('ChoosePayment')).toBe('Credit');
+	expect(fields.get('PaymentType')).toBe('aio');
+	expect(fields.get('EncryptType')).toBe('1');
+	expect(fields.get('MerchantTradeNo')).toMatch(/^DS\d{6}[A-Z0-9]{4}01$/);
+	expect(fields.get('TotalAmount')).toMatch(/^\d+$/);
+	expect(fields.get('CheckMacValue')).toMatch(/^[0-9A-F]{64}$/);
+	expect(fields.get('ReturnURL')).toMatch(/\/api\/ecpay\/payment\/return$/);
+	expect(fields.get('PaymentInfoURL')).toMatch(/\/api\/ecpay\/payment\/info$/);
+	const backUrl = fields.get('ClientBackURL') ?? '';
+	expect(backUrl).toMatch(/\/orders\/[0-9a-f-]{36}\?t=[0-9a-f]{64}$/);
+	await expect(page.getByText('ECPay stub')).toBeVisible();
+
+	// 買家從綠界回來（ClientBackURL）
+	await page.goto(backUrl);
+	const orderNo = (fields.get('MerchantTradeNo') ?? '').slice(0, -2);
 	// 純文字比對會同時吃到 SvelteKit 導覽時寫入的 #svelte-announcer（也含訂單編號），改比對標題本身
-	await expect(page.getByRole('heading', { name: /DS\d{6}[A-Z0-9]{4}/ })).toBeVisible();
+	await expect(page.getByRole('heading', { name: orderNo })).toBeVisible();
 	await expect(page.getByText('待付款')).toBeVisible();
 	await expect(page.getByText(product.name)).toBeVisible();
 	await expect(page.getByText('重慶南路一段 122 號')).toBeVisible();

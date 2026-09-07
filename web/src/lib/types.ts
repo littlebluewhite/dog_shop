@@ -179,7 +179,10 @@ export type OrderInput = {
 	payment_method: PaymentMethod;
 	note?: string;
 };
-export type OrderCreated = { order_id: string; order_no: string; guest_token: string };
+/** 送往綠界的隱藏表單：action 是網址，fields 是欄位（含 CheckMacValue） */
+export type EcpayForm = { action: string; fields: Record<string, string> };
+/** ecpay 只有在訂單已成立、但事後組表單失敗時才會是 null；這時要把買家導去訂單頁 */
+export type OrderCreated = { order_id: string; order_no: string; guest_token: string; ecpay: EcpayForm | null };
 
 export type OrderItem = {
 	product_name: string;

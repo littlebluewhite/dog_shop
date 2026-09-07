@@ -6,10 +6,11 @@
 	import { CHECKOUT_STORAGE_KEY, defaultForm, toOrderInput, validateForm, type CheckoutForm } from '$lib/checkout';
 	import AddressFields from '$lib/components/AddressFields.svelte';
 	import InvoiceFields from '$lib/components/checkout/InvoiceFields.svelte';
+	import { postToEcpay } from '$lib/ecpay';
 	import { twd } from '$lib/format';
 	import { CVS_LABELS, PAYMENT_LABELS } from '$lib/labels';
 	import { toast } from '$lib/toast.svelte';
-	import type { CartValidateResponse, CvsStore, CvsSubType, OrderCreated, PaymentMethod } from '$lib/types';
+	import type { CartValidateResponse, CvsStore, CvsSubType, EcpayForm, OrderCreated, PaymentMethod } from '$lib/types';
 	import { CVS_SUBTOTAL_LIMIT, shippingFee } from '$lib/validation';
 	import type { PageProps } from './$types';
 
@@ -123,21 +124,22 @@
 			return;
 		}
 		submitting = true;
-		let target: string | null = null;
+		let ecpay: EcpayForm | null = null;
+		let created: OrderCreated | null = null;
 		try {
 			const body = toOrderInput(
 				form,
 				lines.map((l) => ({ variant_id: l.variant_id, qty: l.qty })),
 				store?.token ?? null
 			);
-			const created = await api<OrderCreated>('/api/orders', { method: 'POST', body: JSON.stringify(body) });
+			created = await api<OrderCreated>('/api/orders', { method: 'POST', body: JSON.stringify(body) });
 			cart.clear();
 			try {
 				sessionStorage.removeItem(CHECKOUT_STORAGE_KEY);
 			} catch {
 				// ignore
 			}
-			target = data.user ? `/orders/${created.order_id}` : `/orders/${created.order_id}?t=${created.guest_token}`;
+			ecpay = created.ecpay;
 		} catch (err) {
 			if (err instanceof ApiError && err.code === 'VALIDATION') {
 				errors = err.fields();
@@ -154,7 +156,14 @@
 		} finally {
 			submitting = false;
 		}
-		if (target) await goto(target);
+		if (ecpay) {
+			// 訂單已成立、購物車已清空；離開本頁去綠界付款（規格 §7 第 7 點）。按鈕維持停用，避免重複送出
+			submitting = true;
+			postToEcpay(ecpay);
+		} else if (created !== null) {
+			// 組綠界表單失敗（罕見）：訂單已成立，先帶去訂單頁；與後端 ClientBackURL 同一套規則（會員不用 token、訪客帶 ?t=，api/src/routes/orders.rs:109）
+			await goto(data.user ? `/orders/${created.order_id}` : `/orders/${created.order_id}?t=${created.guest_token}`);
+		}
 	}
 
 	const input = 'mt-1 w-full rounded border border-gray-300 px-3 py-2';
