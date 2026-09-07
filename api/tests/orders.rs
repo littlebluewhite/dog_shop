@@ -286,3 +286,25 @@ async fn member_order_rejects_guest_token(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// POST /api/orders 掛的是獨立 governor（不跟 auth 共用配額）：burst 10，
+/// 前 10 次都會被處理（{} 缺必填欄位 → 400 VALIDATION），第 11 次 429。
+#[sqlx::test(migrations = "./migrations")]
+async fn order_creation_is_rate_limited(pool: PgPool) {
+    let app = common::app(pool);
+    for _ in 0..10 {
+        let (status, body, _) = common::send(
+            &app,
+            common::req("POST", "/api/orders", None, Some(json!({}))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let (status, body, _) = common::send(
+        &app,
+        common::req("POST", "/api/orders", None, Some(json!({}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+}

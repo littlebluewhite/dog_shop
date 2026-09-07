@@ -193,7 +193,7 @@ pub fn shipping_fee(shipping: &ShippingSettings, method: &str, subtotal: i32) ->
 pub fn merge_items(items: &[OrderItemInput]) -> Vec<(Uuid, i32)> {
     let mut merged: Vec<(Uuid, i32)> = Vec::new();
     for item in items {
-        let qty = item.qty.max(1);
+        let qty = item.qty.clamp(1, MAX_QTY_PER_LINE);
         match merged.iter_mut().find(|(id, _)| *id == item.variant_id) {
             Some((_, q)) => *q = (*q + qty).min(MAX_QTY_PER_LINE),
             None => merged.push((item.variant_id, qty.min(MAX_QTY_PER_LINE))),
@@ -939,6 +939,20 @@ mod tests {
             },
         ]);
         assert_eq!(merged, vec![(a, 99), (b, 1)]);
+
+        // 兩列同一規格在相加前就要夾住，不然 i32::MAX + i32::MAX 會整數溢位
+        let c = Uuid::now_v7();
+        let merged = merge_items(&[
+            OrderItemInput {
+                variant_id: c,
+                qty: i32::MAX,
+            },
+            OrderItemInput {
+                variant_id: c,
+                qty: i32::MAX,
+            },
+        ]);
+        assert_eq!(merged, vec![(c, 99)]);
     }
 
     #[test]

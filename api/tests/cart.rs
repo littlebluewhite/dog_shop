@@ -149,3 +149,30 @@ async fn validate_rejects_too_many_lines(pool: PgPool) {
         "一次最多 50 種商品"
     );
 }
+
+/// 未登入的 /cart/validate 不會走 validate_input 的 1..=99 檢查，merge_items 要在相加前就夾住
+/// 數量，不然兩列同規格的巨大 qty 相加會整數溢位（見 fix wave item 1）
+#[sqlx::test(migrations = "./migrations")]
+async fn validate_clamps_huge_quantities(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let (variant, _) = common::active_product(&pool, "夾限測試", 300, 5).await;
+
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            "/api/cart/validate",
+            None,
+            Some(json!({ "items": [
+                { "variant_id": variant, "qty": 2147483647 },
+                { "variant_id": variant, "qty": 2147483647 }
+            ] })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["qty"], 5);
+    assert_eq!(items[0]["reason"], "qty_reduced");
+}
