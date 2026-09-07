@@ -56,6 +56,14 @@ export class Cart {
 		this.persist();
 	}
 
+	/** 用伺服器核對後的資料更新顯示用欄位（價格、名稱、圖）；沒這列就忽略 */
+	update(variant_id: string, patch: Partial<Omit<CartLine, 'variant_id' | 'qty'>>) {
+		const line = this.lines.find((l) => l.variant_id === variant_id);
+		if (!line) return;
+		Object.assign(line, patch);
+		this.persist();
+	}
+
 	setQty(variant_id: string, qty: number) {
 		if (!Number.isFinite(qty) || qty <= 0) {
 			this.remove(variant_id);

@@ -60,4 +60,15 @@ describe('Cart', () => {
 		c.clear();
 		expect(c.lines).toEqual([]);
 	});
+
+	it('update patches display fields only', () => {
+		const cart = new Cart();
+		cart.add(line, 2);
+		cart.update('v1', { price: 999, product_name: '新名字' });
+		expect(cart.lines[0].price).toBe(999);
+		expect(cart.lines[0].product_name).toBe('新名字');
+		expect(cart.lines[0].qty).toBe(2);
+		cart.update('nope', { price: 1 });
+		expect(cart.lines).toHaveLength(1);
+	});
 });
