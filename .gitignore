@@ -6,6 +6,7 @@ web/node_modules/
 web/.svelte-kit/
 web/build/
 web/test-results/
+web/playwright-report/
 
 # 環境變數與上傳檔
 .env
