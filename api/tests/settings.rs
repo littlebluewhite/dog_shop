@@ -92,3 +92,24 @@ async fn admin_can_read_validate_and_update(pool: PgPool) {
     assert_eq!(public["shipping"]["free_threshold"], 1000);
     assert_eq!(public["payment_methods"]["cvs_code"], false);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn migration_creates_catalog_tables(pool: PgPool) {
+    for table in [
+        "users",
+        "sessions",
+        "categories",
+        "products",
+        "product_variants",
+        "product_images",
+    ] {
+        // sqlx 0.9 的 query_scalar 要求 SqlSafeStr；table 只來自上面固定的字面字串陣列，
+        // 不是外部輸入，用 AssertSqlSafe 手動核可這個動態組出來的 SQL。
+        let count: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0, "{table} 應該是空的");
+    }
+}
