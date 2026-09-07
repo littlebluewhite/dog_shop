@@ -137,9 +137,10 @@ pub fn is_mobile_barcode(s: &str) -> bool {
 
 /// 自然人憑證條碼：2 個大寫英文字母 + 14 碼數字
 pub fn is_citizen_cert(s: &str) -> bool {
-    s.len() == 16
-        && s[..2].bytes().all(|b| b.is_ascii_uppercase())
-        && s[2..].bytes().all(|b| b.is_ascii_digit())
+    let b = s.as_bytes();
+    b.len() == 16
+        && b[..2].iter().all(u8::is_ascii_uppercase)
+        && b[2..].iter().all(u8::is_ascii_digit)
 }
 
 /// 捐贈愛心碼：3～7 碼數字
@@ -380,6 +381,7 @@ mod tests {
         assert!(!is_mobile_barcode("/abc+123"));
         assert!(is_citizen_cert("AB12345678901234"));
         assert!(!is_citizen_cert("A123456789012345"));
+        assert!(!is_citizen_cert("中A345678901234"));
         assert!(is_love_code("168"));
         assert!(!is_love_code("12"));
         assert!(!is_love_code("12345678"));
