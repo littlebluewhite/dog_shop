@@ -15,6 +15,11 @@ export class ApiError extends Error {
 		const fields = (this.details as { fields?: Record<string, string> } | null)?.fields;
 		return fields?.[name];
 	}
+
+	/** 驗證錯誤的整張欄位表；不是欄位錯誤時回空物件 */
+	fields(): Record<string, string> {
+		return (this.details as { fields?: Record<string, string> } | null)?.fields ?? {};
+	}
 }
 
 /** 把 fetch 的 Response 變成資料或丟 ApiError。204 回 undefined。 */

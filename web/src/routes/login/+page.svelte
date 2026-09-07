@@ -67,4 +67,8 @@
 			{submitting ? '登入中…' : '登入'}
 		</button>
 	</form>
+	<div class="mt-4 flex justify-between text-sm text-gray-600">
+		<a href="/register" class="underline">還沒有帳號？註冊</a>
+		<a href="/forgot-password" class="underline">忘記密碼？</a>
+	</div>
 </div>

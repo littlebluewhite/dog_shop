@@ -34,3 +34,11 @@ describe('parseResponse', () => {
 		expect((err as ApiError).code).toBe('HTTP_502');
 	});
 });
+
+describe('ApiError', () => {
+	it('fields() returns the whole map or {}', () => {
+		const err = new ApiError(400, 'VALIDATION', '輸入資料有誤', { fields: { email: '格式不正確' } });
+		expect(err.fields()).toEqual({ email: '格式不正確' });
+		expect(new ApiError(500, 'INTERNAL', 'x').fields()).toEqual({});
+	});
+});
