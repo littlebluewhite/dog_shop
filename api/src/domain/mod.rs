@@ -2,6 +2,7 @@ pub mod addresses;
 pub mod cart;
 pub mod categories;
 pub mod cvs_stores;
+pub mod invoices;
 pub mod jobs;
 pub mod orders;
 pub mod password_resets;

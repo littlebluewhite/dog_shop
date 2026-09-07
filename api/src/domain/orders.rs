@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::auth::tokens::generate_token;
 pub use crate::domain::addresses::is_postal_code;
 use crate::domain::cvs_stores::{self, CvsStore};
+use crate::domain::invoices::{self, InvoiceRow};
 use crate::domain::jobs;
 use crate::domain::settings::{self, PaymentMethods, ShippingSettings};
 pub use crate::domain::users::is_tw_mobile;
@@ -416,6 +417,12 @@ pub struct ShipmentRow {
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct PaymentRow {
+    /// 給 send_email:payment_instructions 指定哪一筆；不回給前端
+    #[serde(skip)]
+    pub id: Uuid,
+    /// 送綠界用；不回給前端
+    #[serde(skip)]
+    pub merchant_trade_no: String,
     pub method: String,
     pub status: String,
     pub amount: i32,
@@ -431,7 +438,9 @@ pub struct OrderDetail {
     pub order: OrderRow,
     pub items: Vec<OrderItemRow>,
     pub shipment: Option<ShipmentRow>,
+    /// 最新一筆付款嘗試（created_at DESC, id DESC）
     pub payment: Option<PaymentRow>,
+    pub invoice: Option<InvoiceRow>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -673,6 +682,9 @@ pub async fn create_order(
     .execute(&mut *tx)
     .await?;
 
+    // 發票先建 pending 一列（規格 §7 第 6 點）；付款成功後由 issue_invoice job 開立
+    invoices::insert_pending_in_tx(&mut tx, order_id, &order_no).await?;
+
     jobs::enqueue(
         &mut tx,
         jobs::KIND_SEND_EMAIL,
@@ -702,14 +714,26 @@ pub async fn get_for_viewer(
     id: Uuid,
     viewer: &Viewer,
 ) -> Result<Option<OrderDetail>, ApiError> {
-    let sql = format!(
-        "SELECT {ORDER_COLUMNS} FROM orders
-         WHERE id = $1 AND ((user_id IS NOT NULL AND user_id = $2) OR ($3::text IS NOT NULL AND user_id IS NULL AND guest_token = $3))"
-    );
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM orders
+                        WHERE id = $1 AND ((user_id IS NOT NULL AND user_id = $2) OR ($3::text IS NOT NULL AND user_id IS NULL AND guest_token = $3)))",
+    )
+    .bind(id)
+    .bind(viewer.user_id())
+    .bind(viewer.token())
+    .fetch_one(db)
+    .await?;
+    if !visible {
+        return Ok(None);
+    }
+    get_detail(db, id).await
+}
+
+/// 不看權限的完整訂單（worker、綠界表單、回呼用）。呼叫者要自己確認能不能給人看
+pub async fn get_detail(db: &PgPool, id: Uuid) -> Result<Option<OrderDetail>, ApiError> {
+    let sql = format!("SELECT {ORDER_COLUMNS} FROM orders WHERE id = $1");
     let Some(order) = sqlx::query_as::<_, OrderRow>(sqlx::AssertSqlSafe(sql))
         .bind(id)
-        .bind(viewer.user_id())
-        .bind(viewer.token())
         .fetch_optional(db)
         .await?
     else {
@@ -731,17 +755,19 @@ pub async fn get_for_viewer(
     .fetch_optional(db)
     .await?;
     let payment = sqlx::query_as::<_, PaymentRow>(
-        "SELECT method, status, amount, atm_bank_code, atm_vaccount, cvs_payment_no, expire_at
-         FROM payments WHERE order_id = $1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT id, merchant_trade_no, method, status, amount, atm_bank_code, atm_vaccount, cvs_payment_no, expire_at
+         FROM payments WHERE order_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
     )
     .bind(id)
     .fetch_optional(db)
     .await?;
+    let invoice = invoices::get_by_order(db, id).await?;
     Ok(Some(OrderDetail {
         order,
         items,
         shipment,
         payment,
+        invoice,
     }))
 }
 
@@ -795,13 +821,21 @@ pub async fn cancel_in_tx(
     if updated == 0 {
         return Ok(false);
     }
-    sqlx::query(
-        "UPDATE product_variants v SET stock = v.stock + oi.quantity
-         FROM order_items oi WHERE oi.order_id = $1 AND v.id = oi.variant_id",
+    // 逐列、依 variant_id 排序加回去：和 create_order 的鎖定順序一致，
+    // 批次過期取消（計畫 3）與同時下單不會互相死鎖（計畫 2 審查 Minor 4）
+    let items: Vec<(Uuid, i32)> = sqlx::query_as(
+        "SELECT variant_id, quantity FROM order_items WHERE order_id = $1 ORDER BY variant_id",
     )
     .bind(order_id)
-    .execute(&mut **tx)
+    .fetch_all(&mut **tx)
     .await?;
+    for (variant_id, quantity) in items {
+        sqlx::query("UPDATE product_variants SET stock = stock + $2 WHERE id = $1")
+            .bind(variant_id)
+            .bind(quantity)
+            .execute(&mut **tx)
+            .await?;
+    }
     Ok(true)
 }
 

@@ -339,3 +339,88 @@ async fn member_orders_are_listed_newest_first(pool: PgPool) {
             .is_some()
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_order_inserts_pending_invoice_and_detail_has_it(pool: PgPool) {
+    let (variant, _) = common::active_product(&pool, "A", 100, 5).await;
+    let created = orders::create_order(&pool, input(vec![(variant, 1)], "home", None), None)
+        .await
+        .unwrap();
+    let (status, relate): (String, String) =
+        sqlx::query_as("SELECT status, relate_number FROM invoices WHERE order_id = $1")
+            .bind(created.order_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (status.as_str(), relate.as_str()),
+        ("pending", created.order_no.as_str())
+    );
+
+    let detail = orders::get_detail(&pool, created.order_id)
+        .await
+        .unwrap()
+        .expect("get_detail 不看權限");
+    assert_eq!(detail.invoice.as_ref().unwrap().status, "pending");
+    assert!(detail.invoice.as_ref().unwrap().invoice_no.is_none());
+    assert_eq!(
+        detail.payment.as_ref().unwrap().merchant_trade_no,
+        format!("{}01", created.order_no)
+    );
+    assert!(
+        orders::get_detail(&pool, Uuid::now_v7())
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // get_for_viewer 與 get_detail 回同一份資料（含 invoice）
+    let viewed = orders::get_for_viewer(
+        &pool,
+        created.order_id,
+        &Viewer::Guest(created.guest_token.clone()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(viewed.invoice.unwrap().status, "pending");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn cancel_restores_each_variant(pool: PgPool) {
+    let (a, _) = common::active_product(&pool, "A", 100, 5).await;
+    let (b, _) = common::active_product(&pool, "B", 100, 7).await;
+    let created = orders::create_order(&pool, input(vec![(a, 2), (b, 3)], "home", None), None)
+        .await
+        .unwrap();
+    assert_eq!((stock_of(&pool, a).await, stock_of(&pool, b).await), (3, 4));
+
+    let mut tx = pool.begin().await.unwrap();
+    assert!(
+        orders::cancel_in_tx(&mut tx, created.order_id, "expired")
+            .await
+            .unwrap()
+    );
+    tx.commit().await.unwrap();
+    assert_eq!((stock_of(&pool, a).await, stock_of(&pool, b).await), (5, 7));
+    let (status, reason): (String, Option<String>) =
+        sqlx::query_as("SELECT status, cancel_reason FROM orders WHERE id = $1")
+            .bind(created.order_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (status.as_str(), reason.as_deref()),
+        ("cancelled", Some("expired"))
+    );
+
+    // 第二次取消不成功、庫存不會再加
+    let mut tx = pool.begin().await.unwrap();
+    assert!(
+        !orders::cancel_in_tx(&mut tx, created.order_id, "expired")
+            .await
+            .unwrap()
+    );
+    tx.commit().await.unwrap();
+    assert_eq!((stock_of(&pool, a).await, stock_of(&pool, b).await), (5, 7));
+}
