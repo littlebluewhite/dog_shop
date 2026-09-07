@@ -9,6 +9,8 @@ export default defineConfig({
 	use: {
 		baseURL: process.env.E2E_BASE_URL ?? 'http://localhost:5173',
 		headless: true,
-		locale: 'zh-TW'
+		locale: 'zh-TW',
+		screenshot: 'only-on-failure',
+		trace: 'retain-on-failure'
 	}
 });

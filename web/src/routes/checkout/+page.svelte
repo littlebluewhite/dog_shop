@@ -160,8 +160,6 @@
 	const input = 'mt-1 w-full rounded border border-gray-300 px-3 py-2';
 </script>
 
-<svelte:head><title>結帳</title></svelte:head>
-
 <h1 class="text-2xl font-bold">結帳</h1>
 
 {#if !cart.loaded}

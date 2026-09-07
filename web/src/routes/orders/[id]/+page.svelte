@@ -12,6 +12,7 @@
 	let cancelling = $state(false);
 
 	async function cancel() {
+		if (cancelling) return;
 		cancelling = true;
 		try {
 			const qs = data.token ? `?t=${encodeURIComponent(data.token)}` : '';
@@ -21,6 +22,8 @@
 			toast.show('訂單已取消');
 		} catch (err) {
 			toast.show(err instanceof ApiError ? err.message : '取消失敗');
+			confirming = false;
+			await invalidateAll();
 		} finally {
 			cancelling = false;
 		}

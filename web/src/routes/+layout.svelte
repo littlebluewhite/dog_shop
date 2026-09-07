@@ -2,6 +2,7 @@
 	import '../app.css';
 	import { onMount } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import favicon from '$lib/assets/favicon.svg';
 	import { cart } from '$lib/cart.svelte';
@@ -21,7 +22,9 @@
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
-	<title>{data.shop.name}</title>
+	<!-- 第一層頁若用元件 bind:（如 /checkout）走 SSR settle loop，自己的 <title> 會被這裡蓋掉；
+	     那些頁改由 load 回傳 title，見 fix-wave 修正波第 5 項的 <title> 診斷 -->
+	<title>{page.data.title ?? data.shop.name}</title>
 </svelte:head>
 
 <header class="border-b border-gray-200 bg-white">
