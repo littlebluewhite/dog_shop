@@ -7,7 +7,8 @@
 	const links = [
 		{ href: '/admin', label: '儀表板' },
 		{ href: '/admin/products', label: '商品' },
-		{ href: '/admin/categories', label: '分類' }
+		{ href: '/admin/categories', label: '分類' },
+		{ href: '/admin/settings', label: '設定' }
 	];
 
 	function isActive(href: string): boolean {
