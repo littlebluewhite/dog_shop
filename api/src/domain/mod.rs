@@ -6,6 +6,7 @@ pub mod invoices;
 pub mod jobs;
 pub mod orders;
 pub mod password_resets;
+pub mod payments;
 pub mod products;
 pub mod settings;
 pub mod users;

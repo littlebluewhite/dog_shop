@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use serde_json::{Map, Value};
 
 use crate::config::EcpayConfig;
 use crate::domain::orders::{
@@ -118,6 +119,81 @@ pub fn checkout_form(
     Ok(CheckoutForm {
         action: cfg.aio_checkout_url().to_string(),
         fields,
+    })
+}
+
+/// 綠界回呼的共同欄位（ReturnURL 與 PaymentInfoURL 都有；規格 §8.2）。其餘原樣留在 `raw`
+#[derive(Debug, Clone)]
+pub struct Notification {
+    pub merchant_trade_no: String,
+    pub rtn_code: i32,
+    pub rtn_msg: String,
+    pub trade_no: String,
+    pub trade_amt: i32,
+    pub payment_type: String,
+    /// `yyyy/MM/dd HH:mm:ss`（台北）；ReturnURL 才有
+    pub payment_date: Option<DateTime<Utc>>,
+    /// 測試環境「模擬付款」會帶 1（規格 §8.2）
+    pub simulate_paid: bool,
+    /// 以下 PaymentInfoURL 才有
+    pub bank_code: Option<String>,
+    pub v_account: Option<String>,
+    pub payment_no: Option<String>,
+    /// ATM 是 `yyyy/MM/dd`（當天 23:59:59），超商是 `yyyy/MM/dd HH:mm:ss`
+    pub expire_at: Option<DateTime<Utc>>,
+    /// 所有欄位原樣（含 CheckMacValue），存進 payments.raw 對帳用
+    pub raw: Value,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CallbackError {
+    #[error("CheckMacValue Error")]
+    BadMac,
+    #[error("缺少欄位 {0}")]
+    Missing(&'static str),
+}
+
+/// 取欄位值（key 不分大小寫）；空字串當沒有
+fn get<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    params
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v.as_str())
+        .filter(|v| !v.is_empty())
+}
+
+/// 先驗簽章再解析。順序重要：沒過簽章什麼都不信
+pub fn parse_notification(
+    cfg: &EcpayConfig,
+    params: &[(String, String)],
+) -> Result<Notification, CallbackError> {
+    if !mac::verify(&cfg.aio.hash_key, &cfg.aio.hash_iv, params) {
+        return Err(CallbackError::BadMac);
+    }
+    let raw: Map<String, Value> = params
+        .iter()
+        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+        .collect();
+    Ok(Notification {
+        merchant_trade_no: get(params, "MerchantTradeNo")
+            .ok_or(CallbackError::Missing("MerchantTradeNo"))?
+            .to_string(),
+        rtn_code: get(params, "RtnCode")
+            .and_then(|v| v.parse().ok())
+            .ok_or(CallbackError::Missing("RtnCode"))?,
+        rtn_msg: get(params, "RtnMsg").unwrap_or("").to_string(),
+        trade_no: get(params, "TradeNo").unwrap_or("").to_string(),
+        trade_amt: get(params, "TradeAmt")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        payment_type: get(params, "PaymentType").unwrap_or("").to_string(),
+        payment_date: get(params, "PaymentDate").and_then(time::parse_datetime),
+        simulate_paid: get(params, "SimulatePaid") == Some("1"),
+        bank_code: get(params, "BankCode").map(str::to_string),
+        v_account: get(params, "vAccount").map(str::to_string),
+        payment_no: get(params, "PaymentNo").map(str::to_string),
+        expire_at: get(params, "ExpireDate").and_then(time::parse_expire),
+        raw: Value::Object(raw),
     })
 }
 
@@ -288,6 +364,56 @@ mod tests {
                 now
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn parse_notification_requires_mac_then_reads_fields() {
+        let cfg = Config::for_tests(PathBuf::from("/tmp")).ecpay;
+        let mut params: Vec<(String, String)> = [
+            ("MerchantID", "3002607"),
+            ("MerchantTradeNo", "DS260906ABCD01"),
+            ("RtnCode", "2"),
+            ("RtnMsg", "Get VirtualAccount Succeeded"),
+            ("TradeNo", "2609061530000002"),
+            ("TradeAmt", "700"),
+            ("PaymentType", "ATM_TAISHIN"),
+            ("BankCode", "812"),
+            ("vAccount", "1234567890123456"),
+            ("ExpireDate", "2026/09/09"),
+            ("SimulatePaid", "0"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        assert_eq!(
+            parse_notification(&cfg, &params).unwrap_err(),
+            CallbackError::BadMac
+        );
+        let mac = mac::check_mac_value(&cfg.aio.hash_key, &cfg.aio.hash_iv, &params);
+        params.push(("CheckMacValue".to_string(), mac));
+        let n = parse_notification(&cfg, &params).unwrap();
+        assert_eq!(n.merchant_trade_no, "DS260906ABCD01");
+        assert_eq!(n.rtn_code, 2);
+        assert_eq!(n.trade_amt, 700);
+        assert_eq!(n.bank_code.as_deref(), Some("812"));
+        assert_eq!(n.v_account.as_deref(), Some("1234567890123456"));
+        assert_eq!(
+            n.expire_at,
+            Some(Utc.with_ymd_and_hms(2026, 9, 9, 15, 59, 59).unwrap())
+        );
+        assert!(n.payment_date.is_none());
+        assert!(!n.simulate_paid);
+        assert_eq!(n.raw["vAccount"], "1234567890123456");
+        assert!(n.raw.get("CheckMacValue").is_some());
+
+        // 缺 MerchantTradeNo（簽章對）
+        let mut short: Vec<(String, String)> = vec![("RtnCode".to_string(), "1".to_string())];
+        let mac = mac::check_mac_value(&cfg.aio.hash_key, &cfg.aio.hash_iv, &short);
+        short.push(("CheckMacValue".to_string(), mac));
+        assert_eq!(
+            parse_notification(&cfg, &short).unwrap_err(),
+            CallbackError::Missing("MerchantTradeNo")
         );
     }
 }
