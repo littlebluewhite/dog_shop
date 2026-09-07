@@ -13,6 +13,13 @@ export type ShopSettings = {
 	contact_phone: string;
 };
 
+export type ShippingSettings = { cvs_fee: number; home_fee: number; free_threshold: number };
+export type PaymentMethods = { credit: boolean; atm: boolean; cvs_code: boolean };
+export type SenderSettings = { name: string; phone: string };
+export type ReturnStore = { sub_type: '' | 'UNIMARTC2C' | 'FAMIC2C' | 'HILIFEC2C'; store_id: string; store_name: string };
+export type PublicSettings = { shop: ShopSettings; shipping: ShippingSettings; payment_methods: PaymentMethods };
+export type AllSettings = PublicSettings & { sender: SenderSettings; return_store: ReturnStore };
+
 export type Category = { id: string; slug: string; name: string; sort_order: number };
 
 export type Page<T> = { items: T[]; total: number; page: number; per_page: number };
