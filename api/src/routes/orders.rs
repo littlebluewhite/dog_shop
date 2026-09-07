@@ -19,7 +19,7 @@ use crate::{
     auth::extract::CurrentUser,
     domain::{
         orders::{self, OrderCreated, OrderDetail, OrderInput, Viewer},
-        settings,
+        payments, settings,
         users::User,
     },
     ecpay::aio::{self, CheckoutForm},
@@ -57,6 +57,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/orders", post(create).layer(governor_layer))
         .route("/api/orders/{id}", get(detail))
         .route("/api/orders/{id}/cancel", post(cancel))
+        .route("/api/orders/{id}/repay", post(repay))
 }
 
 /// 規格 §7 第 6 點的回應：訂單資料 + 送往綠界的表單（與規格不同之處 23）。
@@ -172,4 +173,59 @@ async fn cancel(
     let (_, viewer) = find_order(&state, id, user.as_ref(), query.t.as_deref()).await?;
     orders::cancel(&state.db, id, &viewer, "buyer").await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize, Default)]
+pub struct RepayBody {
+    /// 沒帶就沿用最近一筆付款的方式
+    #[serde(default)]
+    pub payment_method: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RepayResponse {
+    pub ecpay: CheckoutForm,
+}
+
+/// 重新付款（規格 §7 第 9 點、§10）：新 payments 列與新 merchant_trade_no，回新的綠界表單。
+/// body 至少要是 `{}`（與規格不同之處 23）
+async fn repay(
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+    AppPath(id): AppPath<Uuid>,
+    AppQuery(query): AppQuery<ViewerQuery>,
+    AppJson(body): AppJson<RepayBody>,
+) -> ApiResult<Json<RepayResponse>> {
+    let (detail, viewer) = find_order(&state, id, user.as_ref(), query.t.as_deref()).await?;
+    if detail.order.status != orders::STATUS_PENDING_PAYMENT {
+        return Err(ApiError::OrderNotPayable);
+    }
+    let method = body
+        .payment_method
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .or_else(|| detail.payment.as_ref().map(|p| p.method.clone()))
+        .ok_or_else(|| ApiError::field("payment_method", "請選擇付款方式"))?;
+    let enabled = settings::get_all(&state.db).await?.payment_methods;
+    let allowed = match method.as_str() {
+        orders::PAYMENT_CREDIT => enabled.credit,
+        orders::PAYMENT_ATM => enabled.atm,
+        orders::PAYMENT_CVS_CODE => enabled.cvs_code,
+        _ => false,
+    };
+    if !allowed {
+        return Err(ApiError::field(
+            "payment_method",
+            "這個付款方式目前沒有開放",
+        ));
+    }
+    payments::create_repayment(&state.db, id, &method).await?;
+    let guest_token = match &viewer {
+        Viewer::Guest(token) => Some(token.as_str()),
+        Viewer::User(_) => None,
+    };
+    let ecpay = checkout_form_for(&state, id, guest_token).await?;
+    Ok(Json(RepayResponse { ecpay }))
 }

@@ -220,3 +220,47 @@ pub async fn apply_info(db: &PgPool, n: &Notification) -> Result<InfoOutcome, Ap
     tx.commit().await?;
     Ok(InfoOutcome::Stored)
 }
+
+/// 重新付款（規格 §7 第 9 點）：新列、新 merchant_trade_no（order_no + 兩碼流水，規格 §3）。
+/// 只有 pending_payment 能重付（ORDER_NOT_PAYABLE）。鎖訂單列，兩個同時重付不會拿到同一個流水
+pub async fn create_repayment(
+    db: &PgPool,
+    order_id: Uuid,
+    method: &str,
+) -> Result<Payment, ApiError> {
+    let mut tx = db.begin().await?;
+    let row: Option<(String, String, i32)> =
+        sqlx::query_as("SELECT order_no, status, total FROM orders WHERE id = $1 FOR UPDATE")
+            .bind(order_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((order_no, status, total)) = row else {
+        return Err(ApiError::NotFound);
+    };
+    if status != STATUS_PENDING_PAYMENT {
+        return Err(ApiError::OrderNotPayable);
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM payments WHERE order_id = $1")
+        .bind(order_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let seq = count + 1;
+    if seq > 99 {
+        return Err(ApiError::OrderNotPayable);
+    }
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO payments (id, order_id, merchant_trade_no, method, amount) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id)
+    .bind(order_id)
+    .bind(format!("{order_no}{seq:02}"))
+    .bind(method)
+    .bind(total)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    get(db, id)
+        .await?
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("剛建立的 payment {id} 不見了")))
+}
