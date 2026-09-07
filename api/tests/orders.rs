@@ -236,3 +236,53 @@ async fn order_errors_over_http(pool: PgPool) {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "VALIDATION");
 }
+
+/// 會員訂單也會拿到 guest_token（下單回應一律回），但這個 token 不能拿來當訪客憑證用：
+/// 沒有 session 時用它看／取消一律 404；有 session 才看得到（安全性修正，見 Fix round 1）。
+#[sqlx::test(migrations = "./migrations")]
+async fn member_order_rejects_guest_token(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let cookie = common::register_cookie(&app, "g@test.local", "password123", "丙").await;
+    let (variant, _) = common::active_product(&pool, "G", 150, 3).await;
+
+    let (status, created, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            "/api/orders",
+            Some(&cookie),
+            Some(order_body(&variant.to_string(), 1, "home", None)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["order_id"].as_str().unwrap().to_string();
+    let token = created["guest_token"].as_str().unwrap().to_string();
+
+    // 沒帶 session，只帶會員訂單的 guest_token → 看不到、也不能取消
+    let (status, _, _) = common::send(
+        &app,
+        common::req("GET", &format!("/api/orders/{id}?t={token}"), None, None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            &format!("/api/orders/{id}/cancel?t={token}"),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // 帶 session 還是看得到
+    let (status, _, _) = common::send(
+        &app,
+        common::req("GET", &format!("/api/orders/{id}"), Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}

@@ -696,7 +696,7 @@ const ORDER_COLUMNS: &str = "id, order_no, user_id, guest_token, status, email, 
      invoice_title, invoice_address, invoice_love_code, needs_refund, created_at, paid_at, shipped_at, completed_at,
      cancelled_at, cancel_reason";
 
-/// 會員看自己的、訪客用 guest_token；都不符回 None（→ 404，不用 403 免得被猜 id）
+/// 會員看自己的、訪客用 guest_token；訪客 token 只對訪客訂單有效；都不符回 None（→ 404，不用 403 免得被猜 id）
 pub async fn get_for_viewer(
     db: &PgPool,
     id: Uuid,
@@ -704,7 +704,7 @@ pub async fn get_for_viewer(
 ) -> Result<Option<OrderDetail>, ApiError> {
     let sql = format!(
         "SELECT {ORDER_COLUMNS} FROM orders
-         WHERE id = $1 AND ((user_id IS NOT NULL AND user_id = $2) OR ($3::text IS NOT NULL AND guest_token = $3))"
+         WHERE id = $1 AND ((user_id IS NOT NULL AND user_id = $2) OR ($3::text IS NOT NULL AND user_id IS NULL AND guest_token = $3))"
     );
     let Some(order) = sqlx::query_as::<_, OrderRow>(sqlx::AssertSqlSafe(sql))
         .bind(id)
@@ -810,7 +810,7 @@ pub async fn cancel(db: &PgPool, id: Uuid, viewer: &Viewer, reason: &str) -> Res
     let mut tx = db.begin().await?;
     let visible: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM orders
-                        WHERE id = $1 AND ((user_id IS NOT NULL AND user_id = $2) OR ($3::text IS NOT NULL AND guest_token = $3)))",
+                        WHERE id = $1 AND ((user_id IS NOT NULL AND user_id = $2) OR ($3::text IS NOT NULL AND user_id IS NULL AND guest_token = $3)))",
     )
     .bind(id)
     .bind(viewer.user_id())
