@@ -7,7 +7,8 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use serde::Deserialize;
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use tower_governor::{
     GovernorError, GovernorLayer, governor::GovernorConfigBuilder,
     key_extractor::SmartIpKeyExtractor,
@@ -18,8 +19,10 @@ use crate::{
     auth::extract::CurrentUser,
     domain::{
         orders::{self, OrderCreated, OrderDetail, OrderInput, Viewer},
+        settings,
         users::User,
     },
+    ecpay::aio::{self, CheckoutForm},
     error::{ApiError, ApiResult},
     extract::{AppJson, AppPath, AppQuery},
     state::AppState,
@@ -56,14 +59,54 @@ pub fn router() -> Router<AppState> {
         .route("/api/orders/{id}/cancel", post(cancel))
 }
 
-/// 會員或訪客都能下單（規格 §7）；登入者的訂單掛在帳號下
+/// 規格 §7 第 6 點的回應：訂單資料 + 送往綠界的表單（與規格不同之處 23）
+#[derive(Serialize)]
+pub struct CreateOrderResponse {
+    #[serde(flatten)]
+    pub created: OrderCreated,
+    pub ecpay: CheckoutForm,
+}
+
+/// 讀完整訂單與最新一筆付款，組綠界表單。create 與 repay（Task 7）共用。
+/// guest_token 有值時 ClientBackURL 帶 ?t=（訪客回到訂單頁要靠它）
+async fn checkout_form_for(
+    state: &AppState,
+    order_id: Uuid,
+    guest_token: Option<&str>,
+) -> ApiResult<CheckoutForm> {
+    let detail = orders::get_detail(&state.db, order_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let payment = detail
+        .payment
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("訂單 {order_id} 沒有 payments 列")))?;
+    let shop = settings::get_all(&state.db).await?.shop;
+    aio::checkout_form(
+        &state.config.ecpay,
+        &state.config.public_base_url,
+        &shop.name,
+        &detail,
+        payment,
+        guest_token,
+        Utc::now(),
+    )
+    .map_err(ApiError::Internal)
+}
+
+/// 會員或訪客都能下單（規格 §7）；登入者的訂單掛在帳號下。回應含送往綠界的表單欄位
 async fn create(
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
     AppJson(input): AppJson<OrderInput>,
-) -> ApiResult<(StatusCode, Json<OrderCreated>)> {
+) -> ApiResult<(StatusCode, Json<CreateOrderResponse>)> {
     let created = orders::create_order(&state.db, input, user.as_ref()).await?;
-    Ok((StatusCode::CREATED, Json(created)))
+    let guest_token = user.is_none().then_some(created.guest_token.as_str());
+    let ecpay = checkout_form_for(&state, created.order_id, guest_token).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateOrderResponse { created, ecpay }),
+    ))
 }
 
 #[derive(Deserialize)]

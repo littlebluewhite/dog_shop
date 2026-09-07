@@ -30,6 +30,12 @@ pub enum ApiError {
     CvsStoreRequired,
     #[error("請求太頻繁，請稍後再試")]
     RateLimited,
+    /// 訂單不是待付款，不能（重新）付款（規格 §10）
+    #[error("這筆訂單目前不能付款")]
+    OrderNotPayable,
+    /// 綠界同步呼叫失敗（規格 §10；計畫 4 的物流建單用，本計畫只定義）
+    #[error("{0}")]
+    EcpayError(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -60,6 +66,8 @@ impl ApiError {
             Self::CvsAmountLimit => "CVS_AMOUNT_LIMIT",
             Self::CvsStoreRequired => "CVS_STORE_REQUIRED",
             Self::RateLimited => "RATE_LIMITED",
+            Self::OrderNotPayable => "ORDER_NOT_PAYABLE",
+            Self::EcpayError(_) => "ECPAY_ERROR",
             Self::Internal(_) => "INTERNAL",
         }
     }
@@ -73,6 +81,8 @@ impl ApiError {
             Self::OutOfStock(_) => StatusCode::CONFLICT,
             Self::CvsAmountLimit | Self::CvsStoreRequired => StatusCode::BAD_REQUEST,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::OrderNotPayable => StatusCode::BAD_REQUEST,
+            Self::EcpayError(_) => StatusCode::BAD_GATEWAY,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -209,5 +219,21 @@ mod tests {
             id.to_string()
         );
         assert_eq!(v["error"]["details"]["items"][0]["available"], 2);
+    }
+
+    #[tokio::test]
+    async fn order_not_payable_and_ecpay_error_envelopes() {
+        let response = ApiError::OrderNotPayable.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let v = body_json(response).await;
+        assert_eq!(v["error"]["code"], "ORDER_NOT_PAYABLE");
+        assert_eq!(v["error"]["message"], "這筆訂單目前不能付款");
+        assert!(v["error"]["details"].is_null());
+
+        let response = ApiError::EcpayError("綠界回應 0|Fail".to_string()).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let v = body_json(response).await;
+        assert_eq!(v["error"]["code"], "ECPAY_ERROR");
+        assert_eq!(v["error"]["message"], "綠界回應 0|Fail");
     }
 }

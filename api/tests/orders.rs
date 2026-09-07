@@ -308,3 +308,86 @@ async fn order_creation_is_rate_limited(pool: PgPool) {
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body["error"]["code"], "RATE_LIMITED");
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_returns_ecpay_form_with_valid_mac(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let (variant, _) = common::active_product(&pool, "雞肉狗糧", 300, 5).await;
+    let mut body = order_body(&variant.to_string(), 2, "home", None);
+    body["payment_method"] = json!("atm");
+    let (status, created, _) =
+        common::send(&app, common::req("POST", "/api/orders", None, Some(body))).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let order_id = created["order_id"].as_str().unwrap();
+    let order_no = created["order_no"].as_str().unwrap();
+    let token = created["guest_token"].as_str().unwrap();
+
+    assert_eq!(
+        created["ecpay"]["action"],
+        "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5"
+    );
+    let fields = created["ecpay"]["fields"].as_object().unwrap();
+    assert_eq!(fields["MerchantID"], "3002607");
+    assert_eq!(fields["MerchantTradeNo"], format!("{order_no}01"));
+    assert_eq!(fields["TotalAmount"], "700", "2 × 300 + 宅配 100");
+    assert_eq!(fields["ChoosePayment"], "ATM");
+    assert_eq!(fields["PaymentType"], "aio");
+    assert_eq!(fields["EncryptType"], "1");
+    assert_eq!(fields["ExpireDate"], "3");
+    assert_eq!(fields["StoreExpireDate"], "4320");
+    assert_eq!(fields["NeedExtraPaidInfo"], "N");
+    assert_eq!(fields["CustomField1"], order_id);
+    assert_eq!(
+        fields["ReturnURL"],
+        format!("{}/api/ecpay/payment/return", common::TEST_ORIGIN)
+    );
+    assert_eq!(
+        fields["PaymentInfoURL"],
+        format!("{}/api/ecpay/payment/info", common::TEST_ORIGIN)
+    );
+    assert_eq!(
+        fields["ClientBackURL"],
+        format!("{}/orders/{order_id}?t={token}", common::TEST_ORIGIN)
+    );
+    assert!(
+        fields["ItemName"]
+            .as_str()
+            .unwrap()
+            .starts_with("雞肉狗糧(預設) x 2")
+    );
+    assert_eq!(fields["MerchantTradeDate"].as_str().unwrap().len(), 19);
+    assert_eq!(fields.len(), 17);
+    let params: Vec<(String, String)> = fields
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+        .collect();
+    assert!(dog_shop_api::ecpay::mac::verify(
+        "pwFHCqoQZGmho4w6",
+        "EkRm7iFT261dpevs",
+        &params
+    ));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn member_checkout_back_url_has_no_token(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let cookie = common::register_cookie(&app, "m2@test.local", "password123", "甲").await;
+    let (variant, _) = common::active_product(&pool, "E", 100, 10).await;
+    let (status, created, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            "/api/orders",
+            Some(&cookie),
+            Some(order_body(&variant.to_string(), 1, "home", None)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["order_id"].as_str().unwrap();
+    assert_eq!(
+        created["ecpay"]["fields"]["ClientBackURL"],
+        format!("{}/orders/{id}", common::TEST_ORIGIN)
+    );
+    assert_eq!(created["ecpay"]["fields"]["ChoosePayment"], "Credit");
+}
