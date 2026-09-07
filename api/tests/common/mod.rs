@@ -138,3 +138,62 @@ pub async fn register_cookie(app: &Router, email: &str, password: &str, name: &s
         .unwrap()
         .to_string()
 }
+
+/// 建一個上架商品（單一預設規格），回 (variant_id, slug)
+pub async fn active_product(
+    pool: &PgPool,
+    name: &str,
+    price: i32,
+    stock: i32,
+) -> (uuid::Uuid, String) {
+    use dog_shop_api::domain::products::{self, ProductInput, VariantInput};
+    let product = products::create(
+        pool,
+        ProductInput {
+            name: name.to_string(),
+            slug: None,
+            description: None,
+            category_id: None,
+            status: "active".to_string(),
+            option1_name: None,
+            option2_name: None,
+            sort_order: None,
+            variants: vec![VariantInput {
+                id: None,
+                option1_value: None,
+                option2_value: None,
+                sku: None,
+                price,
+                compare_at_price: None,
+                stock,
+                is_active: None,
+                image_path: None,
+            }],
+            images: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    (product.variants[0].id, product.product.slug.clone())
+}
+
+/// 塞一筆有效的門市選擇，回 token
+pub async fn cvs_store_token(pool: &PgPool) -> String {
+    use dog_shop_api::domain::cvs_stores::{self, CvsStore};
+    let token = dog_shop_api::auth::tokens::generate_token();
+    cvs_stores::insert(
+        pool,
+        &CvsStore {
+            token: token.clone(),
+            sub_type: "UNIMARTC2C".to_string(),
+            store_id: "131386".to_string(),
+            store_name: "測試門市".to_string(),
+            store_address: "台北市中正區重慶南路一段 122 號".to_string(),
+            store_phone: "0223456789".to_string(),
+        },
+        60,
+    )
+    .await
+    .unwrap();
+    token
+}

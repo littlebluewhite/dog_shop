@@ -1,5 +1,6 @@
 pub mod addresses;
 pub mod categories;
+pub mod cvs_stores;
 pub mod jobs;
 pub mod orders;
 pub mod password_resets;
