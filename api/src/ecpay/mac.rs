@@ -136,6 +136,12 @@ mod tests {
         assert!(!verify(KEY, IV, &params), "改了金額就不能過");
 
         assert!(!verify(KEY, IV, &doc_params()), "沒有 CheckMacValue 不能過");
-        assert!(!verify("wrongkey", IV, &doc_params()), "key 不對不能過");
+
+        let mut params2 = doc_params();
+        params2.push((
+            "CheckMacValue".to_string(),
+            check_mac_value(KEY, IV, &doc_params()),
+        ));
+        assert!(!verify("wrongkey", IV, &params2), "key 不對不能過");
     }
 }
