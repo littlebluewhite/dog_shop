@@ -42,10 +42,10 @@ struct LineRow {
 }
 
 pub async fn check(db: &PgPool, items: &[OrderItemInput]) -> Result<CartCheck, ApiError> {
-    let merged = orders::merge_items(items);
-    if merged.len() > orders::MAX_LINES {
+    if items.len() > orders::MAX_LINES {
         return Err(ApiError::field("items", "一次最多 50 種商品"));
     }
+    let merged = orders::merge_items(items);
     let mut checked = Vec::with_capacity(merged.len());
     let mut subtotal = 0;
     for (variant_id, wanted) in merged {

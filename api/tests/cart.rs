@@ -123,3 +123,29 @@ async fn cvs_store_lookup(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// 品項數上限要在合併（O(n²)）之前擋掉，免得沒登入的呼叫端用超大 body 卡住 worker
+#[sqlx::test(migrations = "./migrations")]
+async fn validate_rejects_too_many_lines(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let items: Vec<_> = (0..51)
+        .map(|_| json!({ "variant_id": uuid::Uuid::now_v7(), "qty": 1 }))
+        .collect();
+
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            "/api/cart/validate",
+            None,
+            Some(json!({ "items": items })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION");
+    assert_eq!(
+        body["error"]["details"]["fields"]["items"],
+        "一次最多 50 種商品"
+    );
+}
