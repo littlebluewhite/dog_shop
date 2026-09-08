@@ -7,6 +7,7 @@ pub mod domain;
 pub mod ecpay;
 pub mod error;
 pub mod extract;
+pub mod jobs;
 pub mod routes;
 pub mod state;
 pub mod storage;
