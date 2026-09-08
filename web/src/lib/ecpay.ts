@@ -1,10 +1,11 @@
 import type { EcpayForm } from '$lib/types';
 
-/** 用隱藏表單把欄位 POST 到綠界（頂層導頁，不用 iframe；規格 §7 第 7 點）。只能在瀏覽器呼叫 */
-export function postToEcpay(form: EcpayForm): void {
+/** 用隱藏表單把欄位 POST 到綠界（規格 §7 第 7 點）。target='_blank' 開新分頁（列印託運單；綠界禁止 iframe） */
+export function postToEcpay(form: EcpayForm, target?: '_blank'): void {
 	const el = document.createElement('form');
 	el.method = 'POST';
 	el.action = form.action;
+	if (target) el.target = target;
 	el.style.display = 'none';
 	for (const [name, value] of Object.entries(form.fields)) {
 		const input = document.createElement('input');
@@ -15,4 +16,5 @@ export function postToEcpay(form: EcpayForm): void {
 	}
 	document.body.appendChild(el);
 	el.submit();
+	if (target) el.remove();
 }

@@ -261,3 +261,87 @@ export type OrderSummary = {
 };
 
 export type RepayResponse = { ecpay: EcpayForm };
+
+// ───── 後台訂單（計畫 4）─────
+export type ShipmentStatus = 'pending' | 'created' | 'in_transit' | 'arrived' | 'picked_up' | 'returned' | 'shipped';
+export type InvoiceStatus = 'pending' | 'issued' | 'failed';
+export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'expired';
+export type AdminOrderFlag = 'needs_refund' | 'cvs_returned' | 'invoice_failed';
+export type AdminOrderListItem = {
+	id: string;
+	order_no: string;
+	status: OrderStatus;
+	email: string;
+	recipient_name: string;
+	shipping_method: ShippingMethod;
+	total: number;
+	item_count: number;
+	needs_refund: boolean;
+	shipment_status: ShipmentStatus | null;
+	invoice_status: InvoiceStatus | null;
+	created_at: string;
+	paid_at: string | null;
+};
+export type AdminShipment = {
+	id: string;
+	order_id: string;
+	method: ShippingMethod;
+	cvs_sub_type: CvsSubType | null;
+	cvs_store_id: string | null;
+	cvs_store_name: string | null;
+	cvs_store_address: string | null;
+	cvs_store_phone: string | null;
+	home_postal_code: string | null;
+	home_city: string | null;
+	home_district: string | null;
+	home_street: string | null;
+	status: ShipmentStatus;
+	ecpay_logistics_id: string | null;
+	ecpay_merchant_trade_no: string | null;
+	cvs_payment_no: string | null;
+	cvs_validation_no: string | null;
+	carrier: string | null;
+	tracking_no: string | null;
+	/** 綠界貨態代碼，或 creating／create_failed／create_error */
+	last_status_code: string | null;
+	last_status_msg: string | null;
+	created_at: string;
+	updated_at: string;
+};
+export type AdminPayment = {
+	id: string;
+	order_id: string;
+	merchant_trade_no: string;
+	method: PaymentMethod | 'cod';
+	status: PaymentStatus;
+	amount: number;
+	ecpay_trade_no: string | null;
+	payment_type: string | null;
+	payment_date: string | null;
+	atm_bank_code: string | null;
+	atm_vaccount: string | null;
+	cvs_payment_no: string | null;
+	expire_at: string | null;
+	created_at: string;
+};
+export type AdminInvoice = OrderInvoice & { error: string | null; updated_at: string };
+export type AdminOrderDetail = Omit<OrderDetail, 'shipment' | 'payment' | 'invoice'> & {
+	user_id: string | null;
+	needs_refund: boolean;
+	shipment: AdminShipment | null;
+	/** 全部付款嘗試，新到舊 */
+	payments: AdminPayment[];
+	invoice: AdminInvoice | null;
+};
+export type Dashboard = {
+	today_orders: number;
+	today_paid_total: number;
+	pending_shipment: number;
+	invoice_failed: number;
+	needs_refund: number;
+	cvs_returned: number;
+	pending_shipment_items: AdminOrderListItem[];
+	needs_refund_items: AdminOrderListItem[];
+	cvs_returned_items: AdminOrderListItem[];
+	invoice_failed_items: AdminOrderListItem[];
+};
