@@ -44,20 +44,24 @@ pub struct ImportResult {
 /// 全部商品逐一寫入。呼叫者保證 parsed.errors 是空的。
 ///
 /// 先全部驗證再寫入：`validate_all` 用「乾跑」（不建分類、不下載圖片、不觸碰資料庫寫入）
-/// 把每個商品的 `products::validate` 都跑過一次，任何一個失敗就整批擋下、什麼都不寫——
-/// 驗證錯誤不會造成部分匯入。DB 唯一鍵衝突等只有真的下 INSERT/UPDATE 才查得出來的錯誤，
-/// 仍可能讓前面幾個商品已經 commit（那是既有「一個商品一個交易」設計下的極少數例外）。
+/// 把每個商品的 `products::validate` 與分類名稱都跑過一次，任何一個失敗就整批擋下、什麼都
+/// 不寫——驗證錯誤不會造成部分匯入。DB 唯一鍵衝突等只有真的下 INSERT/UPDATE 才查得出來的
+/// 錯誤，仍可能讓前面幾個商品已經 commit（那是既有「一個商品一個交易」設計下的極少數例外）。
+///
+/// 乾跑讀到的既有商品**只用來驗證**，不拿來當寫入的底：整批圖片下載可能跑很久，那段時間
+/// 客人下單扣掉的庫存不能被寫回去。所以每個商品都在圖片下載完、真的要寫入之前才重讀一次
+/// （`find_by_external_ref`），殘餘的競爭窗口只剩「重讀到 UPDATE」之間的毫秒級。
 pub async fn apply(
     db: &PgPool,
     upload_dir: &Path,
     fetcher: &ImageFetcher,
     parsed: &ParsedImport,
 ) -> Result<ImportResult, ApiError> {
-    let existing_by_product = validate_all(db, &parsed.products).await?;
+    validate_all(db, &parsed.products).await?;
 
     let mut result = ImportResult::default();
     let mut category_cache: HashMap<String, Uuid> = HashMap::new();
-    for (p, existing) in parsed.products.iter().zip(existing_by_product) {
+    for p in parsed.products.iter() {
         let category_id = match &p.category {
             None => None,
             Some(name) => match category_cache.get(name) {
@@ -86,6 +90,8 @@ pub async fn apply(
                 }),
             }
         }
+        // 寫入前才重讀庫存快照：下載期間客人下單扣掉的庫存不能被寫回去
+        let existing = products::find_by_external_ref(db, &p.external_ref).await?;
         if images.is_empty()
             && let Some(ex) = &existing
         {
@@ -134,14 +140,12 @@ pub async fn apply(
 /// 乾跑：對每個商品用 `products::validate` 檢查一次（分類給 `None`——`validate` 不看
 /// `category_id`；圖片給空陣列，所以乾跑不檢查圖片張數上限——那條規則 parse 已經擋過
 /// （每個商品的圖片網址 ≤ MAX_IMAGES 個），保留原圖的情況也只是重用既有、已經驗過的圖片列）。
+/// 工作表填的**分類名稱**也在這裡先驗一次（`categories::validate_name`），不然名稱太長要等到
+/// 寫入迴圈裡 `find_or_create_by_name` 才會失敗，前面的商品早就寫進去了。
 /// 任何一個商品沒過就把全部欄位錯誤（各自加上商品編號前綴）收進同一個 `FieldErrors`，整批
-/// 擋下、不建分類、不下載圖片、不寫任何一列。查到的既有商品順便回傳給呼叫者的第二輪重用，
-/// 不用再查一次資料庫。
-async fn validate_all(
-    db: &PgPool,
-    products_in: &[ImportProduct],
-) -> Result<Vec<Option<AdminProduct>>, ApiError> {
-    let mut existing_by_product = Vec::with_capacity(products_in.len());
+/// 擋下、不建分類、不下載圖片、不寫任何一列。這裡讀到的既有商品**只用來乾跑驗證**，不回傳
+/// 給寫入用——寫入前會重讀（見 `apply` 的說明）。
+async fn validate_all(db: &PgPool, products_in: &[ImportProduct]) -> Result<(), ApiError> {
     let mut errors = FieldErrors::new();
     for p in products_in {
         let existing = products::find_by_external_ref(db, &p.external_ref).await?;
@@ -149,10 +153,13 @@ async fn validate_all(
         if let Err(ApiError::Validation { details, .. }) = products::validate(&dry_input) {
             add_prefixed_fields(&mut errors, &details, &p.external_ref);
         }
-        existing_by_product.push(existing);
+        if let Some(name) = &p.category
+            && let Err(ApiError::Validation { details, .. }) = categories::validate_name(name)
+        {
+            add_category_error(&mut errors, &details, &p.external_ref);
+        }
     }
-    errors.into_result()?;
-    Ok(existing_by_product)
+    errors.into_result()
 }
 
 /// 既有商品當底，只覆蓋工作表有填的欄位（與規格不同之處 51）
@@ -185,7 +192,13 @@ fn build_input(
                 compare_at_price: matched.and_then(|m| m.compare_at_price),
                 stock: v.stock.or_else(|| matched.map(|m| m.stock)).unwrap_or(0),
                 is_active: matched.map(|m| m.is_active),
-                image_path: None,
+                // 規格在後台指定的那張圖：只有當它的 path 也在這次要寫入的 images 裡才留得住
+                // （整組換新圖時新 path 不同，就變成 None——換圖後要回後台重指定）
+                image_path: matched
+                    .and_then(|m| m.image_id)
+                    .and_then(|id| existing.and_then(|e| e.images.iter().find(|i| i.id == id)))
+                    .map(|i| i.path.clone())
+                    .filter(|path| images.iter().any(|i| i.path == *path)),
             }
         })
         .collect();
@@ -219,6 +232,17 @@ fn add_prefixed_fields(acc: &mut FieldErrors, details: &Value, external_ref: &st
                 acc.add(&format!("{external_ref}.{k}"), msg);
             }
         }
+    }
+}
+
+/// `categories::validate_name` 回的欄位名是 `name`，直接前綴會跟商品名稱的錯誤撞鍵
+/// （`FieldErrors::add` 只留先進來的那一個），所以分類的錯誤明確掛在 `{external_ref}.category`，
+/// 訊息沿用 `validate_name` 的文案。
+fn add_category_error(acc: &mut FieldErrors, details: &Value, external_ref: &str) {
+    if let Some(fields) = details.get("fields").and_then(|v| v.as_object())
+        && let Some(msg) = fields.values().find_map(|v| v.as_str())
+    {
+        acc.add(&format!("{external_ref}.category"), msg);
     }
 }
 

@@ -1,6 +1,8 @@
 //! 匯入圖片下載（規格 §13：10 秒 timeout、≤ 10 MB、只收圖片 MIME；失敗只當該列警告）。
-//! 只擋非 http/https；不擋內網位址（與規格不同之處 60）
+//! 只收 http／https，而且每一次連線（含每一跳轉址）的目的位址都必須是公開位址——內網服務、
+//! cloud metadata（169.254.169.254）與私有網段一律擋掉
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +21,8 @@ pub const FETCH_CONCURRENCY: usize = 6;
 pub enum FetchError {
     #[error("只接受 http／https 網址")]
     Scheme,
+    #[error("圖片網址不是公開網址")]
+    NotPublic,
     /// 固定文案＋狀態碼或「連線失敗」；不放回應內容
     #[error("下載失敗：{0}")]
     Http(String),
@@ -32,6 +36,85 @@ pub enum FetchError {
     Store,
 }
 
+/// 位址白名單：只放行公開位址。**允許 loopback**（127.0.0.0/8、`::1`）——測試的假圖床就在
+/// 127.0.0.1，而容器裡的 loopback 只是 api 自己，沒有別的服務可打。其餘保留範圍一律擋掉。
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_public_v4(v4),
+        // IPv4-mapped（`::ffff:10.0.0.1`）換回 v4 再套同一套規則，不然是個現成的繞道
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => is_public_v4(v4),
+            None => is_public_v6(v6),
+        },
+    }
+}
+
+fn is_public_v4(ip: Ipv4Addr) -> bool {
+    if ip.is_loopback() {
+        return true;
+    }
+    let [a, b, _, _] = ip.octets();
+    !(ip.is_unspecified()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || ip.is_private()      // 10/8、172.16/12、192.168/16
+        || ip.is_link_local()   // 169.254/16，含 cloud metadata 的 169.254.169.254
+        || (a == 100 && (64..128).contains(&b))) // shared address space 100.64/10
+}
+
+fn is_public_v6(ip: Ipv6Addr) -> bool {
+    if ip.is_loopback() {
+        return true;
+    }
+    let head = ip.segments()[0];
+    !(ip.is_unspecified()
+        || ip.is_multicast()
+        || (head & 0xfe00) == 0xfc00   // unique local fc00::/7
+        || (head & 0xffc0) == 0xfe80) // link-local fe80::/10
+}
+
+/// 每一次連線之前都要跑：IP 字面值直接判，網域名先解析、**全部**解析結果都是公開位址才放行
+/// （解析到私有位址的網域是最常見的繞法）。解析失敗或沒有結果都當連線失敗。
+///
+/// 已知殘餘風險：檢查通過之後 reqwest 會自己再解析一次 DNS，兩次之間 IP 被換掉（DNS rebinding）
+/// 這裡擋不到；要根治得自己接管連線（自訂 resolver／Connector），代價遠大於這裡要防的威脅。
+async fn check_public_host(url: &reqwest::Url) -> Result<(), FetchError> {
+    let host = url.host_str().ok_or(FetchError::Scheme)?;
+    // IPv6 字面值在 URL 裡是包在中括號裡的
+    let literal = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = literal.parse::<IpAddr>() {
+        return if is_public_ip(ip) {
+            Ok(())
+        } else {
+            Err(FetchError::NotPublic)
+        };
+    }
+    let port = url.port_or_known_default().unwrap_or(80);
+    let resolved = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| FetchError::Http("連線失敗".to_string()))?;
+    let mut any = false;
+    for addr in resolved {
+        any = true;
+        if !is_public_ip(addr.ip()) {
+            return Err(FetchError::NotPublic);
+        }
+    }
+    if any {
+        Ok(())
+    } else {
+        Err(FetchError::Http("連線失敗".to_string()))
+    }
+}
+
+fn http_url(url: &str) -> Result<reqwest::Url, FetchError> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| FetchError::Scheme)?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(FetchError::Scheme);
+    }
+    Ok(parsed)
+}
+
 #[derive(Clone)]
 pub struct ImageFetcher {
     client: reqwest::Client,
@@ -41,21 +124,57 @@ impl ImageFetcher {
     pub fn new() -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
-            .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+            // 轉址自己跟：每一跳都要重跑公開位址檢查，reqwest 自動跟就跳過檢查了
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent("dog-shop-import/1.0")
             .build()?;
         Ok(Self { client })
     }
 
-    /// 下載並檢查 MIME 與大小；不解碼
+    /// 下載並檢查 MIME 與大小；不解碼。
+    /// 整個過程（所有跳數＋讀 body）包在**一個** 10 秒的 timeout 裡：自己跟轉址之後，光靠
+    /// client 的 timeout 會變成每一跳各 10 秒（最壞 40 秒一張圖），那就不是規格 §13 的 10 秒了。
     pub async fn fetch(&self, url: &str) -> Result<Vec<u8>, FetchError> {
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err(FetchError::Scheme);
-        }
-        let resp = self.client.get(url).send().await.map_err(|e| {
-            tracing::info!(url, error = %e, "匯入圖片下載連線失敗");
-            FetchError::Http("連線失敗".to_string())
-        })?;
+        tokio::time::timeout(
+            Duration::from_secs(FETCH_TIMEOUT_SECS),
+            self.fetch_following_redirects(url),
+        )
+        .await
+        .unwrap_or_else(|_| Err(FetchError::Http("下載超過 10 秒".to_string())))
+    }
+
+    /// 最多跟 MAX_REDIRECTS 跳，每一跳（含第一次請求）都先跑公開位址檢查。
+    /// 連線錯誤只記 host 與去掉網址的錯誤——網址可能帶簽名 token，不能進 log。
+    async fn fetch_following_redirects(&self, url: &str) -> Result<Vec<u8>, FetchError> {
+        let mut current = http_url(url)?;
+        let mut hops = 0usize;
+        let resp = loop {
+            check_public_host(&current).await?;
+            let host = current.host_str().unwrap_or("?").to_string();
+            let resp = self.client.get(current.clone()).send().await.map_err(|e| {
+                tracing::info!(host = %host, error = %e.without_url(), "匯入圖片下載連線失敗");
+                FetchError::Http("連線失敗".to_string())
+            })?;
+            if !matches!(resp.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+                break resp;
+            }
+            if hops >= MAX_REDIRECTS {
+                return Err(FetchError::Http("轉址超過 3 次".to_string()));
+            }
+            let location = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| FetchError::Http("連線失敗".to_string()))?;
+            // 相對網址（Location: /ok.png）要用這一跳的網址當基底解析
+            current = current
+                .join(location)
+                .map_err(|_| FetchError::Http("連線失敗".to_string()))?;
+            if !matches!(current.scheme(), "http" | "https") {
+                return Err(FetchError::Scheme);
+            }
+            hops += 1;
+        };
         let status = resp.status();
         if !status.is_success() {
             return Err(FetchError::Http(format!("HTTP {}", status.as_u16())));
@@ -173,7 +292,8 @@ mod tests {
 
     /// 假圖床：/ok.png 真圖、/html 文字、/big 是超過 10 MB 的假圖（有 Content-Length）、
     /// /big-no-length 是真的沒有 Content-Length 的 chunked 回應（超過 10 MB）、/no-type 完全
-    /// 沒有 Content-Type header、/500 伺服器錯、/redirect → /ok.png
+    /// 沒有 Content-Type header、/500 伺服器錯、/redirect → /ok.png、
+    /// /redirect-private → 私有位址、/redirect-loop → 自己、/redirect-relative → 相對的 ok.png
     async fn serve() -> SocketAddr {
         async fn ok() -> impl IntoResponse {
             (
@@ -251,6 +371,27 @@ mod tests {
                 [(header::LOCATION, HeaderValue::from_static("/ok.png"))],
             )
         }
+        async fn redirect_private() -> impl IntoResponse {
+            (
+                StatusCode::FOUND,
+                [(
+                    header::LOCATION,
+                    HeaderValue::from_static("http://192.168.0.1/x.png"),
+                )],
+            )
+        }
+        async fn redirect_loop() -> impl IntoResponse {
+            (
+                StatusCode::FOUND,
+                [(header::LOCATION, HeaderValue::from_static("/redirect-loop"))],
+            )
+        }
+        async fn redirect_relative() -> impl IntoResponse {
+            (
+                StatusCode::FOUND,
+                [(header::LOCATION, HeaderValue::from_static("ok.png"))],
+            )
+        }
         async fn corrupt() -> impl IntoResponse {
             (
                 [(header::CONTENT_TYPE, HeaderValue::from_static("image/png"))],
@@ -265,6 +406,9 @@ mod tests {
             .route("/no-type", get(no_type))
             .route("/500", get(fail))
             .route("/redirect", get(redirect))
+            .route("/redirect-private", get(redirect_private))
+            .route("/redirect-loop", get(redirect_loop))
+            .route("/redirect-relative", get(redirect_relative))
             .route("/corrupt", get(corrupt));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -375,5 +519,112 @@ mod tests {
                 assert!(r.is_ok());
             }
         }
+    }
+
+    #[test]
+    fn is_public_ip_allows_loopback_and_rejects_reserved_ranges() {
+        let cases: &[(&str, bool)] = &[
+            ("127.0.0.1", true),
+            ("127.4.5.6", true),
+            ("::1", true),
+            ("8.8.8.8", true),
+            ("2001:4860:4860::8888", true),
+            ("0.0.0.0", false),
+            ("10.0.0.1", false),
+            ("172.16.0.1", false),
+            ("192.168.0.1", false),
+            ("169.254.169.254", false),
+            ("100.64.0.1", false),
+            ("224.0.0.1", false),
+            ("255.255.255.255", false),
+            ("::", false),
+            ("fe80::1", false),
+            ("fd00::1", false),
+            ("ff02::1", false),
+            ("::ffff:10.0.0.1", false),
+            ("::ffff:8.8.8.8", true),
+        ];
+        for (raw, expected) in cases {
+            let ip: IpAddr = raw.parse().unwrap();
+            assert_eq!(is_public_ip(ip), *expected, "{raw}");
+        }
+    }
+
+    /// 私有／保留位址在**連線之前**就被擋下來——這些位址上沒有任何測試伺服器在聽，
+    /// 拿到 NotPublic（而不是「連線失敗」或逾時）就證明根本沒有送出封包。
+    #[tokio::test]
+    async fn private_addresses_are_rejected_before_connecting() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = tempfile::tempdir().unwrap();
+        let fetcher = ImageFetcher::new().unwrap();
+        for url in [
+            "http://10.0.0.1/a.png",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[fe80::1]/x.png",
+            "http://100.64.0.1/x.png",
+        ] {
+            assert_eq!(
+                fetch_and_store(&fetcher, dir.path(), url)
+                    .await
+                    .unwrap_err(),
+                FetchError::NotPublic,
+                "{url}"
+            );
+        }
+    }
+
+    /// 轉址的每一跳都要重驗：第一跳是公開的（127.0.0.1 的測試伺服器），Location 指向私有位址。
+    #[tokio::test]
+    async fn a_redirect_into_a_private_address_is_rejected() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let addr = serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let fetcher = ImageFetcher::new().unwrap();
+        assert_eq!(
+            fetch_and_store(
+                &fetcher,
+                dir.path(),
+                &format!("http://{addr}/redirect-private")
+            )
+            .await
+            .unwrap_err(),
+            FetchError::NotPublic
+        );
+    }
+
+    /// 轉址迴圈要在 3 跳之後停下來，而且不能卡住（外層還有 10 秒 timeout 兜底）。
+    #[tokio::test]
+    async fn a_redirect_loop_stops_after_three_hops() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let addr = serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let fetcher = ImageFetcher::new().unwrap();
+        let started = std::time::Instant::now();
+        let err = fetch_and_store(
+            &fetcher,
+            dir.path(),
+            &format!("http://{addr}/redirect-loop"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, FetchError::Http("轉址超過 3 次".to_string()));
+        assert!(started.elapsed() < Duration::from_secs(5), "不能卡住");
+    }
+
+    /// 相對的 Location（`ok.png`，沒有開頭斜線）要用這一跳的網址當基底解析。
+    #[tokio::test]
+    async fn a_relative_redirect_resolves_against_the_current_url() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let addr = serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let fetcher = ImageFetcher::new().unwrap();
+        let stored = fetch_and_store(
+            &fetcher,
+            dir.path(),
+            &format!("http://{addr}/redirect-relative"),
+        )
+        .await
+        .unwrap();
+        assert!(stored.path.starts_with("/uploads/"));
     }
 }

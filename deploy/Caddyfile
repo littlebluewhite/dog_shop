@@ -1,7 +1,7 @@
 # 反向代理（規格 §2）。
 # 不設 trusted_proxies：Caddy 會忽略客戶端送來的 X-Forwarded-* 並自己寫入真實來源 IP，
 # api 的限流（X-Forwarded-For）因此不可能被偽造 —— 前提是 api／web 不對外開埠（見 docker-compose.yml）。
-# 若前面還有 CDN（Cloudflare），才在 global options 加 trusted_proxies，並只信任它的 IP 範圍。
+# 若前面還有 CDN（Cloudflare），trusted_proxies 一項不夠，要照 docs/deploy.md 第 4 節整套設定。
 {$SITE_ADDRESS} {
 	encode zstd gzip
 

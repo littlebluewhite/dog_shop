@@ -66,3 +66,53 @@ fn formatted_empty_tail_rows_do_not_count() {
     assert_eq!(p.row_count, 2);
     assert_eq!(p.products.len(), 2);
 }
+
+/// 宣告的工作表範圍超過格數預算就要直接拒絕，不能讓 calamine 去配置整個稠密矩陣。
+/// 這裡用「略超預算」的形狀（25_001 × 101 ≈ 2.5M 格）：舊碼只配約 80 MB，回 TooManyRows，
+/// 所以斷言乾淨地紅。真正極端的遠格檔（XFD1048576）只在新碼上測，見下一個測試。
+#[test]
+fn a_sheet_range_over_the_cell_budget_is_rejected() {
+    let mut wb = Workbook::new();
+    let ws = wb.add_worksheet();
+    for (c, h) in ["商品編號", "商品名稱", "價格", "庫存", "圖片網址"]
+        .iter()
+        .enumerate()
+    {
+        ws.write_string(0, c as u16, *h).unwrap();
+    }
+    ws.write_string(1, 0, "A1").unwrap();
+    ws.write_string(1, 1, "狗糧").unwrap();
+    ws.write_number(1, 2, 1200.0).unwrap();
+    // 一格遠在右下角：25_001 列 × 101 欄 ≈ 2.5M 格，超過 200 萬格的上限
+    ws.write_string(25_000, 100, " ").unwrap();
+    let bytes = wb.save_to_buffer().unwrap();
+    let r = parse_xlsx(&bytes);
+    assert!(matches!(&r, Err(ImportError::TooBig)), "{r:?}");
+}
+
+/// 極端的遠格檔：只有標題列與 `XFD1048576` 一格，宣告矩形是 170 億格。舊碼會拿它去配置
+/// 整個稠密矩陣（行程直接被作業系統收掉），新碼在任何配置之前就靠宣告矩形擋下來，所以這個
+/// 測試同時釘住「會拒絕」與「拒絕得夠快」。
+#[test]
+fn a_far_away_cell_is_rejected_without_allocating() {
+    let mut wb = Workbook::new();
+    let ws = wb.add_worksheet();
+    for (c, h) in ["商品編號", "商品名稱", "價格", "庫存", "圖片網址"]
+        .iter()
+        .enumerate()
+    {
+        ws.write_string(0, c as u16, *h).unwrap();
+    }
+    ws.write_string(1, 0, "A1").unwrap();
+    ws.write_string(1, 1, "狗糧").unwrap();
+    ws.write_number(1, 2, 1200.0).unwrap();
+    // xlsx 的最後一格（XFD1048576，0-based）
+    ws.write_string(1_048_575, 16_383, " ").unwrap();
+    let bytes = wb.save_to_buffer().unwrap();
+
+    let started = std::time::Instant::now();
+    let r = parse_xlsx(&bytes);
+    let elapsed = started.elapsed();
+    assert!(matches!(&r, Err(ImportError::TooBig)), "{r:?}");
+    assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+}

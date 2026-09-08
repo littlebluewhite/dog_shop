@@ -3,6 +3,7 @@ mod common;
 use axum::{
     Router,
     body::{Body, Bytes},
+    extract::State,
     http::{HeaderValue, Request, StatusCode, header},
     response::IntoResponse,
     routing::get,
@@ -11,6 +12,7 @@ use rust_xlsxwriter::Workbook;
 use serde_json::json;
 use sqlx::PgPool;
 use std::net::SocketAddr;
+use uuid::Uuid;
 
 fn png(width: u32, height: u32) -> Vec<u8> {
     let img = image::RgbImage::from_pixel(width, height, image::Rgb([10, 200, 90]));
@@ -35,6 +37,29 @@ async fn image_server() -> String {
     let app = Router::new()
         .route("/ok.png", get(ok))
         .route("/500", get(fail));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+/// 會扣庫存的假圖床：`/hook.png` 被打到時**先**把指定規格的庫存扣 1 再回傳 PNG。
+/// 用來確定性地模擬「圖片下載期間客人下單」，不用 sleep 競速。
+async fn stock_hook_server(pool: PgPool, variant_id: Uuid) -> String {
+    async fn hook(State((pool, variant_id)): State<(PgPool, Uuid)>) -> impl IntoResponse {
+        sqlx::query("UPDATE product_variants SET stock = stock - 1 WHERE id = $1")
+            .bind(variant_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        (
+            [(header::CONTENT_TYPE, HeaderValue::from_static("image/png"))],
+            Bytes::from(png(40, 30)),
+        )
+    }
+    let app = Router::new()
+        .route("/hook.png", get(hook))
+        .with_state((pool, variant_id));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -700,4 +725,207 @@ async fn commit_writes_nothing_when_a_later_product_fails_validation(pool: PgPoo
         .await
         .unwrap();
     assert_eq!(categories_after, categories_before);
+}
+
+/// 預覽拿指紋 → 帶著指紋 commit。回傳 commit 的 (status, body)。
+async fn preview_then_commit(
+    app: &Router,
+    cookie: &str,
+    file: &[u8],
+) -> (StatusCode, serde_json::Value) {
+    let (status, body, _) = common::send(
+        app,
+        multipart(cookie, "/api/admin/import/preview", file, None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "預覽應該成功：{body}");
+    let fp = body["fingerprint"].as_str().unwrap().to_string();
+    let (status, body, _) = common::send(
+        app,
+        multipart(
+            cookie,
+            "/api/admin/import/commit",
+            file,
+            Some(("fingerprint", &fp)),
+        ),
+    )
+    .await;
+    (status, body)
+}
+
+/// 圖片網址留白（原圖保留）的純改價匯入，不能把老闆在後台設定的「規格→圖片」對應清掉。
+/// `products::update` 每次都會刪掉再重建整組 `product_images`（每張圖拿到新的 id），所以斷言
+/// 不是「image_id 不變」，而是「image_id 非 NULL、而且指到同一個 path」。
+#[sqlx::test(migrations = "./migrations")]
+async fn reimport_keeps_variant_image_assignment_when_images_are_kept(pool: PgPool) {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let base = image_server().await;
+    let (app, _state) = common::app_with_state(pool.clone());
+    let cookie = common::admin_cookie(&app, &pool).await;
+    let first = xlsx(&[
+        s(HEADER),
+        s(&[
+            "A1",
+            "狗糧",
+            "",
+            "",
+            "口味",
+            "雞肉",
+            "",
+            "",
+            "1200",
+            "10",
+            "",
+            &format!("{base}/ok.png"),
+        ]),
+    ]);
+    let (status, body) = preview_then_commit(&app, &cookie, &first).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let before = dog_shop_api::domain::products::find_by_external_ref(&pool, "A1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.images.len(), 1);
+    let image_path = before.images[0].path.clone();
+    // 老闆在後台把這個規格指定成第一張圖
+    sqlx::query("UPDATE product_variants SET image_id = $1 WHERE id = $2")
+        .bind(before.images[0].id)
+        .bind(before.variants[0].id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 第二次：純改價，圖片網址整欄留白 → 原圖保留
+    let second = xlsx(&[
+        s(HEADER),
+        s(&[
+            "A1", "狗糧", "", "", "口味", "雞肉", "", "", "1250", "", "", "",
+        ]),
+    ]);
+    let (status, body) = preview_then_commit(&app, &cookie, &second).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let after = dog_shop_api::domain::products::find_by_external_ref(&pool, "A1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.images.len(), 1, "原圖保留");
+    assert_eq!(after.images[0].path, image_path);
+    assert_eq!(after.variants.len(), 1);
+    let assigned = after.variants[0]
+        .image_id
+        .expect("規格的圖片對應要跟著保留（舊碼會被清成 NULL）");
+    let path: String = sqlx::query_scalar("SELECT path FROM product_images WHERE id = $1")
+        .bind(assigned)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(path, image_path, "規格指到的還是同一張圖");
+}
+
+/// 分類名稱也要在寫入前就驗證：第 2 個商品的分類名超過 50 字，整批擋下，
+/// `products` 與 `categories` 都不能多出任何一列（舊碼會先把第 1 個商品與它的分類寫進去）。
+#[sqlx::test(migrations = "./migrations")]
+async fn commit_writes_nothing_when_a_later_product_has_an_invalid_category(pool: PgPool) {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (app, _state) = common::app_with_state(pool.clone());
+    let cookie = common::admin_cookie(&app, &pool).await;
+    let too_long = "分".repeat(51);
+    let file = xlsx(&[
+        s(HEADER),
+        s(&[
+            "A1", "狗糧", "", "狗糧", "", "", "", "", "1200", "10", "", "",
+        ]),
+        s(&[
+            "B2",
+            "玩具球",
+            "",
+            &too_long,
+            "",
+            "",
+            "",
+            "",
+            "99",
+            "0",
+            "",
+            "",
+        ]),
+    ]);
+    let (status, body) = preview_then_commit(&app, &cookie, &file).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"]["details"]["fields"]["B2.category"],
+        json!("必填，最多 50 字"),
+        "{body}"
+    );
+
+    let products: i64 = sqlx::query_scalar("SELECT count(*) FROM products")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(products, 0, "第 1 個商品也不能被寫進去");
+    let categories: i64 = sqlx::query_scalar("SELECT count(*) FROM categories")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(categories, 0, "第 1 個商品的分類也不能被建出來");
+}
+
+/// 圖片下載期間客人下單扣掉的庫存，不能被匯入寫回去。`/hook.png` 這條路由被打到時會先把
+/// 規格的庫存扣 1，所以只有「下載完才重讀」的版本才會看到 9；舊碼用的是下載**之前**的
+/// 快照，會把 10 寫回去。這是確定性的，不靠 sleep 競速。
+#[sqlx::test(migrations = "./migrations")]
+async fn commit_rereads_stock_after_downloading_images(pool: PgPool) {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (app, _state) = common::app_with_state(pool.clone());
+    let cookie = common::admin_cookie(&app, &pool).await;
+
+    // 第一次：庫存 10、圖片網址留白
+    let first = xlsx(&[
+        s(HEADER),
+        s(&[
+            "A1", "狗糧", "", "", "口味", "雞肉", "", "", "1200", "10", "", "",
+        ]),
+    ]);
+    let (status, body) = preview_then_commit(&app, &cookie, &first).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let before = dog_shop_api::domain::products::find_by_external_ref(&pool, "A1")
+        .await
+        .unwrap()
+        .unwrap();
+    let variant_id = before.variants[0].id;
+    assert_eq!(before.variants[0].stock, 10);
+
+    let base = stock_hook_server(pool.clone(), variant_id).await;
+    // 第二次：庫存留白（＝以資料庫現值為準）、圖片網址是會扣庫存的那條路由
+    let second = xlsx(&[
+        s(HEADER),
+        s(&[
+            "A1",
+            "狗糧",
+            "",
+            "",
+            "口味",
+            "雞肉",
+            "",
+            "",
+            "1250",
+            "",
+            "",
+            &format!("{base}/hook.png"),
+        ]),
+    ]);
+    let (status, body) = preview_then_commit(&app, &cookie, &second).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let stock: i32 = sqlx::query_scalar("SELECT stock FROM product_variants WHERE id = $1")
+        .bind(variant_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        stock, 9,
+        "下載期間被客人扣掉的庫存不能被寫回去（舊碼會是 10）"
+    );
 }

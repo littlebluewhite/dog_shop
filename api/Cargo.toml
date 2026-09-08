@@ -63,6 +63,8 @@ tower_governor = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["serde", "v4", "v7"] }
+# 只用來讀 xlsx（zip）的 central directory 量解壓後大小；跟 calamine 同一版，不拉新 crate
+zip = { version = "8.6", default-features = false }
 
 [dev-dependencies]
 http-body-util = { version = "0.1", features = ["channel"] }

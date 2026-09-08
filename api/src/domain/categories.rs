@@ -39,7 +39,9 @@ pub fn resolve_slug(input: Option<&str>) -> Result<String, ApiError> {
     }
 }
 
-fn validate_name(name: &str) -> Result<(), ApiError> {
+/// 分類名稱：去頭尾空白後 1～50 字。匯入的乾跑驗證也要用（見 `import::apply::validate_all`），
+/// 所以是 pub。
+pub fn validate_name(name: &str) -> Result<(), ApiError> {
     let mut errors = FieldErrors::new();
     let len = name.trim().chars().count();
     if len == 0 || len > 50 {

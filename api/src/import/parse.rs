@@ -70,6 +70,10 @@ pub enum ImportError {
     MissingColumns(String),
     #[error("資料列超過 {0} 列")]
     TooManyRows(usize),
+    #[error(
+        "檔案太大或格子太多（解壓後超過 64 MB，或範圍超過 200 萬格），請刪掉多餘的欄與列再上傳"
+    )]
+    TooBig,
 }
 
 /// 儲存格 → 字串：數字去掉 .0；日期／錯誤當空白；去頭尾空白
@@ -85,8 +89,66 @@ fn cell_to_string(d: &Data) -> String {
     }
 }
 
+/// 單一 zip entry 解壓後的上限（sharedStrings 會被 calamine 整份讀進記憶體）
+const MAX_ZIP_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+/// 全部 zip entry 解壓後的總量上限
+const MAX_ZIP_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+/// 工作表格數上限（`worksheet_range` 會配置整個外接矩形的稠密矩陣）
+const MAX_CELLS: u64 = 2_000_000;
+
+/// 只讀 zip central directory 記的「解壓後大小」，不解壓任何一個 entry：上傳的 5 MB 上限
+/// 擋不住壓縮比極高的檔案（xlsx 就是 zip）。
+fn check_zip_budget_with(bytes: &[u8], max_entry: u64, max_total: u64) -> Result<(), ImportError> {
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| ImportError::Unreadable)?;
+    let mut total: u64 = 0;
+    for i in 0..zip.len() {
+        let size = zip
+            .by_index_raw(i)
+            .map_err(|_| ImportError::Unreadable)?
+            .size();
+        if size > max_entry {
+            return Err(ImportError::TooBig);
+        }
+        total = total.saturating_add(size);
+        if total > max_total {
+            return Err(ImportError::TooBig);
+        }
+    }
+    Ok(())
+}
+
+fn check_zip_budget(bytes: &[u8]) -> Result<(), ImportError> {
+    check_zip_budget_with(bytes, MAX_ZIP_ENTRY_BYTES, MAX_ZIP_TOTAL_BYTES)
+}
+
+/// 在 `worksheet_range` 配置矩陣**之前**先量格數：先看工作表自己宣告的矩形（一個只有 A1 與
+/// XFD1048576 兩格的迷你檔宣告的就是 170 億格），再逐格掃過真的有值的格子，抓「宣告很小、
+/// 實際有遠格」的檔案。逐格掃描不配置矩陣，只記最大的列與欄。
+fn check_cell_budget(wb: &mut Xlsx<Cursor<Vec<u8>>>, sheet: &str) -> Result<(), ImportError> {
+    let mut reader = wb
+        .worksheet_cells_reader(sheet)
+        .map_err(|_| ImportError::Unreadable)?;
+    let d = reader.dimensions();
+    let rows = u64::from(d.end.0.saturating_sub(d.start.0)) + 1;
+    let cols = u64::from(d.end.1.saturating_sub(d.start.1)) + 1;
+    if rows.saturating_mul(cols) > MAX_CELLS {
+        return Err(ImportError::TooBig);
+    }
+    let (mut max_row, mut max_col) = (0u64, 0u64);
+    while let Some(cell) = reader.next_cell().map_err(|_| ImportError::Unreadable)? {
+        let (row, col) = cell.get_position();
+        max_row = max_row.max(u64::from(row));
+        max_col = max_col.max(u64::from(col));
+        if (max_row + 1).saturating_mul(max_col + 1) > MAX_CELLS {
+            return Err(ImportError::TooBig);
+        }
+    }
+    Ok(())
+}
+
 /// 第一個工作表 → 字串格 → parse_grid
 pub fn parse_xlsx(bytes: &[u8]) -> Result<ParsedImport, ImportError> {
+    check_zip_budget(bytes)?;
     let mut wb: Xlsx<_> =
         open_workbook_from_rs(Cursor::new(bytes.to_vec())).map_err(|_| ImportError::Unreadable)?;
     let name = wb
@@ -94,6 +156,7 @@ pub fn parse_xlsx(bytes: &[u8]) -> Result<ParsedImport, ImportError> {
         .first()
         .cloned()
         .ok_or(ImportError::Unreadable)?;
+    check_cell_budget(&mut wb, &name)?;
     let range = wb
         .worksheet_range(&name)
         .map_err(|_| ImportError::Unreadable)?;
@@ -829,5 +892,27 @@ mod tests {
         assert_eq!(parse_amount("12a3"), None);
         assert_eq!(parse_amount("ＮＴ＄1200"), Some(1200));
         assert_eq!(parse_amount("1t2"), None);
+    }
+
+    /// zip 預算是照 central directory 記的解壓後大小算的，所以用小上限打一個普通檔案就驗得到，
+    /// 不用真的造一個 70 MB 的檔。
+    #[test]
+    fn zip_budget_counts_uncompressed_sizes() {
+        let mut wb = rust_xlsxwriter::Workbook::new();
+        let ws = wb.add_worksheet();
+        ws.write_string(0, 0, "商品編號").unwrap();
+        ws.write_string(0, 1, "商品名稱").unwrap();
+        ws.write_string(0, 2, "價格").unwrap();
+        let bytes = wb.save_to_buffer().unwrap();
+
+        assert!(matches!(
+            check_zip_budget_with(&bytes, MAX_ZIP_ENTRY_BYTES, 1),
+            Err(ImportError::TooBig)
+        ));
+        assert!(matches!(
+            check_zip_budget_with(&bytes, 1, MAX_ZIP_TOTAL_BYTES),
+            Err(ImportError::TooBig)
+        ));
+        assert!(check_zip_budget(&bytes).is_ok(), "普通檔案要過");
     }
 }
