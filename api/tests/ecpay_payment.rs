@@ -241,6 +241,45 @@ async fn bad_mac_is_400_and_changes_nothing(pool: PgPool) {
     assert_eq!(o_status, "pending_payment");
     assert_eq!(payment_row(&pool, &mtn).await.0, "pending");
     assert!(jobs_of(&pool, "issue_invoice").await.is_empty());
+
+    // /api/ecpay/payment/info 也要擋壞簽章（各自呼叫 parse_notification，是獨立的 handler）
+    let mut info = info_fields(
+        &mtn,
+        &[
+            ("RtnCode", "2"),
+            ("PaymentType", "ATM_TAISHIN"),
+            ("BankCode", "812"),
+            ("vAccount", "1234567890123456"),
+            ("ExpireDate", "2026/09/09"),
+        ],
+    );
+    info.push(("CheckMacValue".to_string(), "0".repeat(64)));
+    let (status, text) = ecpay_post_raw(&app, "/api/ecpay/payment/info", info).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::BAD_REQUEST, "0|CheckMacValue Error")
+    );
+    let (bank, vaccount, expire_at, p_status): (
+        Option<String>,
+        Option<String>,
+        Option<DateTime<Utc>>,
+        String,
+    ) = sqlx::query_as(
+        "SELECT atm_bank_code, atm_vaccount, expire_at, status FROM payments WHERE merchant_trade_no = $1",
+    )
+    .bind(&mtn)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(bank.is_none());
+    assert!(vaccount.is_none());
+    assert!(expire_at.is_none());
+    assert_eq!(p_status, "pending");
+    assert_eq!(
+        jobs_of(&pool, "send_email").await.len(),
+        1,
+        "只有下單時的 order_created，沒有新排 payment_instructions"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -362,6 +401,159 @@ async fn amount_mismatch_is_treated_as_late(pool: PgPool) {
     assert!(needs_refund);
     assert_eq!(payment_row(&pool, &mtn).await.0, "paid");
     assert!(jobs_of(&pool, "issue_invoice").await.is_empty());
+}
+
+/// 規格 §4：訂單已因另一筆付款嘗試變成 paid，第一筆的回呼才遲到抵達（買家在兩個分頁各付一次）
+#[sqlx::test(migrations = "./migrations")]
+async fn late_payment_after_another_attempt_paid(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let (order_id, mtn1, token) = place_order(&app, &pool, "credit").await;
+
+    // 重新付款：新的 payments 列 …02
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            &format!("/api/orders/{order_id}/repay?t={token}"),
+            None,
+            Some(json!({ "payment_method": "credit" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mtn2 = body["ecpay"]["fields"]["MerchantTradeNo"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(mtn2, mtn1);
+    assert!(mtn2.ends_with("02"), "{mtn2}");
+
+    // …02 先成功付款（金額正確、訂單仍待付款）→ 訂單變 paid
+    let (status, text) = ecpay_post(
+        &app,
+        "/api/ecpay/payment/return",
+        return_fields(&mtn2, "700"),
+    )
+    .await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+    let (o_status, paid_at, needs_refund) = order_row(&pool, order_id).await;
+    assert_eq!(o_status, "paid");
+    assert!(!needs_refund);
+    let first_paid_at = paid_at.expect("…02 成功後應該有 paid_at");
+
+    // …01（第一次付款嘗試）現在才遲到抵達：金額正確、簽章正確，但訂單已經被 …02 付掉了。
+    // PaymentDate／TradeNo 特意換成不同值，這樣「paid_at 沒被覆寫」才是真的斷言到東西，
+    // 不是巧合地跟 …02 的值相同。
+    let mut late_fields = return_fields(&mtn1, "700");
+    late_fields
+        .iter_mut()
+        .find(|(k, _)| k == "PaymentDate")
+        .unwrap()
+        .1 = "2026/09/06 16:45:00".to_string();
+    late_fields
+        .iter_mut()
+        .find(|(k, _)| k == "TradeNo")
+        .unwrap()
+        .1 = "2609061645000099".to_string();
+    let (status, text) = ecpay_post(&app, "/api/ecpay/payment/return", late_fields).await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+
+    assert_eq!(
+        payment_row(&pool, &mtn1).await.0,
+        "paid",
+        "…01 也標成 paid（雖然是遲到）"
+    );
+    let (o_status, paid_at, needs_refund) = order_row(&pool, order_id).await;
+    assert_eq!(o_status, "paid", "訂單狀態不會被遲到付款動到");
+    assert_eq!(
+        paid_at,
+        Some(first_paid_at),
+        "paid_at 不能被 …01 的遲到回呼覆寫"
+    );
+    assert!(needs_refund, "…01 是遲到付款，要標 needs_refund（規格 §4）");
+
+    assert_eq!(
+        jobs_of(&pool, "issue_invoice").await.len(),
+        1,
+        "不會因為 …01 的遲到回呼多排一次發票"
+    );
+    let emails = jobs_of(&pool, "send_email").await;
+    assert_eq!(
+        emails.len(),
+        2,
+        "order_created + …02 的 payment_received，…01 不會再排一次"
+    );
+    assert_eq!(emails[1].0["template"], "payment_received");
+}
+
+/// 修正波 #1：回呼掛了 64 KB body 上限與 100 筆欄位數上限（api/src/routes/ecpay_payment.rs），
+/// 兩者都要在簽章驗證與資料庫寫入之前擋下來，不能讓匿名者拿去當記憶體放大器
+#[sqlx::test(migrations = "./migrations")]
+async fn oversized_callback_is_rejected_cheaply(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let (_, mtn, _) = place_order(&app, &pool, "credit").await;
+
+    // ~200 KB body（遠超過回呼的 64 KB 上限）→ 413，DefaultBodyLimit 在進 handler 之前就擋掉
+    let huge: Vec<(String, String)> = vec![("a".to_string(), "1".to_string()); 50_000];
+    for path in ["/api/ecpay/payment/return", "/api/ecpay/payment/info"] {
+        let (status, _) = ecpay_post_raw(&app, path, huge.clone()).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{path}");
+    }
+    assert_eq!(
+        payment_row(&pool, &mtn).await.0,
+        "pending",
+        "413 不會碰到這筆 payment"
+    );
+
+    // /info：大小沒超過，但欄位筆數超過 MAX_CALLBACK_FIELDS；簽章仍然算對，
+    // 證明是被筆數擋下而不是簽章不符（若沒有這個上限，這會是一次成功的 Stored）
+    let mut info_over = info_fields(
+        &mtn,
+        &[
+            ("RtnCode", "2"),
+            ("PaymentType", "ATM_TAISHIN"),
+            ("BankCode", "812"),
+            ("vAccount", "1234567890123456"),
+            ("ExpireDate", "2026/09/09"),
+        ],
+    );
+    info_over.extend((0..140).map(|i| (format!("Extra{i}"), "x".to_string())));
+    assert!(info_over.len() > 150);
+    let (status, text) = ecpay_post(&app, "/api/ecpay/payment/info", info_over).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::BAD_REQUEST, "0|CheckMacValue Error")
+    );
+    let vaccount: Option<String> =
+        sqlx::query_scalar("SELECT atm_vaccount FROM payments WHERE merchant_trade_no = $1")
+            .bind(&mtn)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        vaccount.is_none(),
+        "簽章其實是對的，筆數上限沒擋住的話這裡會存進帳號"
+    );
+    assert_eq!(
+        jobs_of(&pool, "send_email").await.len(),
+        1,
+        "只有下單時的 order_created，沒有新排 payment_instructions"
+    );
+
+    // /return 同理：簽章對、RtnCode=1、金額也對，筆數上限沒擋住的話這筆會變 paid
+    let mut return_over = return_fields(&mtn, "700");
+    return_over.extend((0..140).map(|i| (format!("Extra{i}"), "x".to_string())));
+    assert!(return_over.len() > 150);
+    let (status, text) = ecpay_post(&app, "/api/ecpay/payment/return", return_over).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::BAD_REQUEST, "0|CheckMacValue Error")
+    );
+    assert_eq!(
+        payment_row(&pool, &mtn).await.0,
+        "pending",
+        "筆數上限沒擋住的話這筆會變 paid"
+    );
 }
 
 fn info_fields(mtn: &str, extra: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -532,5 +724,62 @@ async fn info_after_paid_or_unknown_is_harmless(pool: PgPool) {
     assert_eq!(
         (status, text.as_str()),
         (StatusCode::OK, "0|Unknown MerchantTradeNo")
+    );
+}
+
+/// Minor 1：買家在綠界取號後、繳費資訊回呼抵達前把訂單取消掉 → 不寫入帳號、不寄「繳費資訊」信
+#[sqlx::test(migrations = "./migrations")]
+async fn info_after_cancel_is_ignored(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let (order_id, mtn, token) = place_order(&app, &pool, "atm").await;
+    let (status, _, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            &format!("/api/orders/{order_id}/cancel?t={token}"),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let fields = info_fields(
+        &mtn,
+        &[
+            ("RtnCode", "2"),
+            ("PaymentType", "ATM_TAISHIN"),
+            ("BankCode", "812"),
+            ("vAccount", "1234567890123456"),
+            ("ExpireDate", "2026/09/09"),
+        ],
+    );
+    let (status, text) = ecpay_post(&app, "/api/ecpay/payment/info", fields).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::OK, "1|OK"),
+        "已知的 MerchantTradeNo 一律回 1|OK，即使被忽略"
+    );
+
+    let (bank, vaccount, expire_at, p_status): (
+        Option<String>,
+        Option<String>,
+        Option<DateTime<Utc>>,
+        String,
+    ) = sqlx::query_as(
+        "SELECT atm_bank_code, atm_vaccount, expire_at, status FROM payments WHERE merchant_trade_no = $1",
+    )
+    .bind(&mtn)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(bank.is_none(), "訂單已取消，不寫入繳費資訊");
+    assert!(vaccount.is_none());
+    assert!(expire_at.is_none());
+    assert_eq!(p_status, "pending");
+    assert_eq!(
+        jobs_of(&pool, "send_email").await.len(),
+        1,
+        "只有下單時的 order_created，沒有寄出繳費資訊信"
     );
 }

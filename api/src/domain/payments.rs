@@ -182,6 +182,17 @@ pub async fn apply_info(db: &PgPool, n: &Notification) -> Result<InfoOutcome, Ap
     if payment.status != PAYMENT_PENDING {
         return Ok(InfoOutcome::Ignored);
     }
+    // 買家在綠界取號後、這個回呼抵達前把訂單取消掉：訂單已不是待付款就不寫入繳費資訊、
+    // 也不寄「繳費資訊」信，免得叫客人去付一筆已取消的訂單（Minor 1）
+    let order_status: String =
+        sqlx::query_scalar("SELECT status FROM orders WHERE id = $1 FOR UPDATE")
+            .bind(payment.order_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if order_status != STATUS_PENDING_PAYMENT {
+        tracing::warn!(merchant_trade_no = %n.merchant_trade_no, order_status = %order_status, "訂單已不是待付款，PaymentInfoURL 不寫入繳費資訊也不寄信");
+        return Ok(InfoOutcome::Ignored);
+    }
     // RtnCode 2 = ATM 取號成功、10100073 = 超商代碼取號成功（綠界文件）；其他碼只存 raw
     let got_info =
         matches!(n.rtn_code, 2 | 10100073) && (n.v_account.is_some() || n.payment_no.is_some());

@@ -3,7 +3,7 @@
 //! 路徑前綴 `/api/ecpay/` 已在 auth/csrf.rs 的 EXEMPT_PREFIXES 內（規格 §11：靠 CheckMacValue 驗）。
 use axum::{
     Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::post,
@@ -16,10 +16,15 @@ use crate::{
     state::AppState,
 };
 
+/// 綠界回呼的欄位筆數上限：`ReturnURL` 最多 30 幾個欄位，100 很寬鬆（修正波 #1）
+const MAX_CALLBACK_FIELDS: usize = 100;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/ecpay/payment/return", post(payment_return))
         .route("/api/ecpay/payment/info", post(payment_info))
+        // 回呼一律 < 2 KB；後掛的 layer 在內層，覆蓋 app.rs 給圖片上傳訂的 10 MB（修正波 #1）
+        .layer(DefaultBodyLimit::max(64 * 1024))
 }
 
 /// 綠界送 application/x-www-form-urlencoded；不用 axum::Form，因為要拿到所有欄位重算簽章
@@ -49,6 +54,9 @@ fn server_error(path: &'static str, err: ApiError) -> Response {
 /// 付款結果
 async fn payment_return(State(state): State<AppState>, body: String) -> Response {
     let params = parse_form(&body);
+    if params.len() > MAX_CALLBACK_FIELDS {
+        return callback_error("return", CallbackError::BadMac);
+    }
     let notification = match aio::parse_notification(&state.config.ecpay, &params) {
         Ok(n) => n,
         Err(e) => return callback_error("return", e),
@@ -69,6 +77,9 @@ async fn payment_return(State(state): State<AppState>, body: String) -> Response
 /// ATM 虛擬帳號／超商代碼
 async fn payment_info(State(state): State<AppState>, body: String) -> Response {
     let params = parse_form(&body);
+    if params.len() > MAX_CALLBACK_FIELDS {
+        return callback_error("info", CallbackError::BadMac);
+    }
     let notification = match aio::parse_notification(&state.config.ecpay, &params) {
         Ok(n) => n,
         Err(e) => return callback_error("info", e),
