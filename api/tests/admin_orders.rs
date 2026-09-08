@@ -1262,3 +1262,77 @@ async fn buyer_cancel_also_expires_pending_payments(pool: PgPool) {
     );
     assert_eq!(stock_of(&pool, id).await, 5);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn dashboard_counts_today_and_lists_attention_items(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let admin = common::admin_cookie(&app, &pool).await;
+
+    let (status, d) = get(&app, &admin, "/api/admin/dashboard").await;
+    assert_eq!(status, StatusCode::OK, "{d}");
+    assert_eq!(d["today_orders"], 0);
+    assert_eq!(d["pending_shipment"], 0);
+    assert!(d["pending_shipment_items"].as_array().unwrap().is_empty());
+
+    let (_pending, _, _) = place_order(&app, &pool, "home").await; // 今日、待付款
+    let (paid, _, _) = place_order(&app, &pool, "cvs").await; // 今日、已付款 660
+    mark_paid(&pool, paid).await;
+    let (old, _, _) = place_order(&app, &pool, "home").await; // 前天、已付款、需退款、發票失敗
+    mark_paid(&pool, old).await;
+    sqlx::query("UPDATE orders SET created_at = now() - interval '2 days', needs_refund = true WHERE id = $1")
+        .bind(old)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE invoices SET status = 'failed', error = 'x' WHERE order_id = $1")
+        .bind(old)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (returned, _, _) = place_order(&app, &pool, "cvs").await; // 今日、已出貨、超商退回
+    mark_paid(&pool, returned).await;
+    sqlx::query("UPDATE orders SET status = 'shipped', shipped_at = now() WHERE id = $1")
+        .bind(returned)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE shipments SET status = 'returned' WHERE order_id = $1")
+        .bind(returned)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, d) = get(&app, &admin, "/api/admin/dashboard").await;
+    assert_eq!(status, StatusCode::OK, "{d}");
+    assert_eq!(d["today_orders"], 3, "前天那筆不算");
+    assert_eq!(
+        d["today_paid_total"],
+        660 + 660,
+        "今日已付款（含已出貨）的總額"
+    );
+    assert_eq!(d["pending_shipment"], 2, "paid 的兩筆（含前天）");
+    assert_eq!(d["invoice_failed"], 1);
+    assert_eq!(d["needs_refund"], 1);
+    assert_eq!(d["cvs_returned"], 1);
+    let ids = |key: &str| -> Vec<String> {
+        d[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        ids("pending_shipment_items"),
+        vec![paid.to_string(), old.to_string()],
+        "新到舊：old 的 created_at 被改成前天"
+    );
+    assert_eq!(ids("needs_refund_items"), vec![old.to_string()]);
+    assert_eq!(ids("cvs_returned_items"), vec![returned.to_string()]);
+    assert_eq!(ids("invoice_failed_items"), vec![old.to_string()]);
+    assert_eq!(d["cvs_returned_items"][0]["shipment_status"], "returned");
+
+    let (status, _, _) =
+        common::send(&app, common::req("GET", "/api/admin/dashboard", None, None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

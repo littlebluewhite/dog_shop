@@ -117,6 +117,67 @@ pub async fn list(
     })
 }
 
+/// 儀表板每個清單最多幾筆
+pub const DASHBOARD_LIST_LIMIT: i64 = 5;
+
+/// 後台首頁（規格 §6.1）：今日訂單、待出貨、發票開立失敗、需退款、超商退回。「今日」用台北日期（與規格不同之處 45）
+#[derive(Debug, Serialize)]
+pub struct Dashboard {
+    pub today_orders: i64,
+    /// 今日成立且已付款（paid／shipped／completed）的總額
+    pub today_paid_total: i64,
+    pub pending_shipment: i64,
+    pub invoice_failed: i64,
+    pub needs_refund: i64,
+    pub cvs_returned: i64,
+    pub pending_shipment_items: Vec<AdminOrderListItem>,
+    pub needs_refund_items: Vec<AdminOrderListItem>,
+    pub cvs_returned_items: Vec<AdminOrderListItem>,
+    pub invoice_failed_items: Vec<AdminOrderListItem>,
+}
+
+pub async fn dashboard(db: &PgPool) -> Result<Dashboard, ApiError> {
+    let (today_orders, today_paid_total): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*),
+                COALESCE(SUM(total) FILTER (WHERE status IN ('paid', 'shipped', 'completed')), 0)::bigint
+         FROM orders
+         WHERE created_at >= (date_trunc('day', now() AT TIME ZONE 'Asia/Taipei') AT TIME ZONE 'Asia/Taipei')",
+    )
+    .fetch_one(db)
+    .await?;
+    let (pending_shipment, invoice_failed, needs_refund, cvs_returned): (i64, i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM orders WHERE status = 'paid'),
+                    (SELECT COUNT(*) FROM invoices WHERE status = 'failed'),
+                    (SELECT COUNT(*) FROM orders WHERE needs_refund),
+                    (SELECT COUNT(*) FROM orders o JOIN shipments s ON s.order_id = o.id
+                      WHERE o.status = 'shipped' AND s.status = 'returned')",
+        )
+        .fetch_one(db)
+        .await?;
+    let limit = DASHBOARD_LIST_LIMIT;
+    Ok(Dashboard {
+        today_orders,
+        today_paid_total,
+        pending_shipment,
+        invoice_failed,
+        needs_refund,
+        cvs_returned,
+        pending_shipment_items: list(db, None, Some(STATUS_PAID), None, 1, limit)
+            .await?
+            .items,
+        needs_refund_items: list(db, None, None, Some(Flag::NeedsRefund), 1, limit)
+            .await?
+            .items,
+        cvs_returned_items: list(db, None, None, Some(Flag::CvsReturned), 1, limit)
+            .await?
+            .items,
+        invoice_failed_items: list(db, None, None, Some(Flag::InvoiceFailed), 1, limit)
+            .await?
+            .items,
+    })
+}
+
 /// 後台看的訂單主檔：比 orders::OrderRow 多 user_id 與 needs_refund；不含 guest_token（規格 §11、與規格不同之處 48）
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct AdminOrderRow {

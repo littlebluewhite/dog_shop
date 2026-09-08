@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::{
     auth::extract::AdminUser,
     domain::{
-        admin_orders::{self, AdminOrderDetail, AdminOrderListItem, Flag},
+        admin_orders::{self, AdminOrderDetail, AdminOrderListItem, Dashboard, Flag},
         invoices, jobs,
         orders::{
             self, SHIPPING_CVS, SHIPPING_HOME, STATUS_COMPLETED, STATUS_PAID, STATUS_SHIPPED,
@@ -34,6 +34,7 @@ use crate::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/admin/dashboard", get(dashboard))
         .route("/api/admin/orders", get(list))
         .route("/api/admin/orders/{id}", get(detail))
         .route("/api/admin/orders/{id}/ship-cvs", post(ship_cvs))
@@ -53,6 +54,10 @@ pub struct ListQuery {
     pub flag: Option<String>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,
+}
+
+async fn dashboard(_admin: AdminUser, State(state): State<AppState>) -> ApiResult<Json<Dashboard>> {
+    Ok(Json(admin_orders::dashboard(&state.db).await?))
 }
 
 async fn list(
