@@ -1,0 +1,96 @@
+# 正式環境（規格 §16）：caddy 是唯一對外的入口；api／web 不開 ports（限流靠 X-Forwarded-For，只能信 Caddy 寫的）
+name: dog_shop
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_ADDRESS: "${SITE_ADDRESS:?請在 deploy/.env 設定 SITE_ADDRESS（例如 shop.example.com）}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - api
+
+  web:
+    build:
+      context: ../web
+    restart: unless-stopped
+    environment:
+      API_INTERNAL_URL: http://api:8080
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:?請在 deploy/.env 設定 PUBLIC_BASE_URL}"
+      ORIGIN: "${PUBLIC_BASE_URL}"
+      PROTOCOL_HEADER: x-forwarded-proto
+      HOST_HEADER: x-forwarded-host
+      PORT: "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ../api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgres://dog_shop:${POSTGRES_PASSWORD:?請在 deploy/.env 設定 POSTGRES_PASSWORD}@db:5432/dog_shop"
+      UPLOAD_DIR: /data/uploads
+      LISTEN_ADDR: 0.0.0.0:8080
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dog_shop
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?}"
+      POSTGRES_DB: dog_shop
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dog_shop -d dog_shop"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  backup:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGUSER: dog_shop
+      PGPASSWORD: "${POSTGRES_PASSWORD:?}"
+      PGDATABASE: dog_shop
+      BACKUP_KEEP_DAYS: "14"
+    volumes:
+      - backups:/backups
+      - ./backup.sh:/backup.sh:ro
+    entrypoint: ["/bin/sh", "/backup.sh", "loop"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata: {}
+  uploads: {}
+  caddy_data: {}
+  caddy_config: {}
+  backups: {}

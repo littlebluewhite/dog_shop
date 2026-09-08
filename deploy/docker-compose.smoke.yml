@@ -1,0 +1,7 @@
+# 本機煙霧測試用的覆蓋檔：不占 80/443，也不與本機的 dev 環境（compose 專案 dog_shop）共用專案名稱。
+name: dog_shop_smoke
+
+services:
+  caddy:
+    ports: !override
+      - "8081:80"

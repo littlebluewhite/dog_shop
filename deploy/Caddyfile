@@ -1,0 +1,24 @@
+# 反向代理（規格 §2）。
+# 不設 trusted_proxies：Caddy 會忽略客戶端送來的 X-Forwarded-* 並自己寫入真實來源 IP，
+# api 的限流（X-Forwarded-For）因此不可能被偽造 —— 前提是 api／web 不對外開埠（見 docker-compose.yml）。
+# 若前面還有 CDN（Cloudflare），才在 global options 加 trusted_proxies，並只信任它的 IP 範圍。
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# 圖片上傳 10 MB、匯入 xlsx 5 MB（api 自己還有 10 MB + 64 KB 的上限）
+	request_body {
+		max_size 12MB
+	}
+
+	handle /api/* {
+		reverse_proxy api:8080
+	}
+
+	handle /uploads/* {
+		reverse_proxy api:8080
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

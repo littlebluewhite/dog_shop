@@ -1,0 +1,5 @@
+target/
+uploads/
+.env
+rust-toolchain.toml
+tests/
