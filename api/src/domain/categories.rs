@@ -108,6 +108,22 @@ pub async fn update(
     map_slug_conflict(result)?.ok_or(ApiError::NotFound)
 }
 
+/// 匯入用：依名稱找分類，同名取 sort_order／id 最小的；沒有就建一個（slug 隨機）
+pub async fn find_or_create_by_name(db: &PgPool, name: &str) -> Result<Category, ApiError> {
+    let name = name.trim();
+    validate_name(name)?;
+    let found = sqlx::query_as::<_, Category>(
+        "SELECT id, slug, name, sort_order FROM categories WHERE name = $1 ORDER BY sort_order, id LIMIT 1",
+    )
+    .bind(name)
+    .fetch_optional(db)
+    .await?;
+    match found {
+        Some(c) => Ok(c),
+        None => create(db, None, name, 0).await,
+    }
+}
+
 /// 刪分類；商品的 category_id 會因 FK ON DELETE SET NULL 變成空。回 false 表示沒這個 id。
 pub async fn delete(db: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("DELETE FROM categories WHERE id = $1")

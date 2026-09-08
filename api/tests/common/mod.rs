@@ -190,6 +190,7 @@ pub async fn active_product(
                 image_path: None,
             }],
             images: vec![],
+            external_ref: None,
         },
     )
     .await

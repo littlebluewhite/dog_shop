@@ -13,6 +13,7 @@ pub const STATUS_ACTIVE: &str = "active";
 pub const STATUS_ARCHIVED: &str = "archived";
 pub const MAX_IMAGES: usize = 9;
 pub const MAX_VARIANTS: usize = 100;
+pub const MAX_PRICE: i32 = 9_999_999;
 
 // ───── 資料列 ─────
 
@@ -105,6 +106,9 @@ pub struct ProductInput {
     pub variants: Vec<VariantInput>,
     #[serde(default)]
     pub images: Vec<ImageInput>,
+    /// 匯入用：對應 products.external_ref（蝦皮商品編號）。後台表單不送；UPDATE 時 None 不會清掉舊值
+    #[serde(default)]
+    pub external_ref: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +200,15 @@ pub fn validate(input: &ProductInput) -> Result<(), ApiError> {
         if v.compare_at_price.is_some_and(|p| p < 0) {
             errors.add(&format!("variants.{i}.compare_at_price"), "原價不能是負數");
         }
+        if v.price > MAX_PRICE {
+            errors.add(&format!("variants.{i}.price"), "價格最多 9,999,999");
+        }
+        if v.compare_at_price.is_some_and(|p| p > MAX_PRICE) {
+            errors.add(
+                &format!("variants.{i}.compare_at_price"),
+                "原價最多 9,999,999",
+            );
+        }
         let v1 = clean(&v.option1_value);
         let v2 = clean(&v.option2_value);
         if has_opt1 && v1.is_none() {
@@ -221,13 +234,21 @@ pub fn validate(input: &ProductInput) -> Result<(), ApiError> {
             errors.add(&format!("images.{i}"), "圖片路徑不正確");
         }
     }
+    if let Some(r) = clean(&input.external_ref)
+        && r.chars().count() > 100
+    {
+        errors.add("external_ref", "商品編號最多 100 字");
+    }
     errors.into_result()
 }
 
-/// 資料庫錯誤 → 我們的錯誤：slug 撞 unique、category 不存在（FK）；其他往上丟
+/// 資料庫錯誤 → 我們的錯誤：slug 撞 unique、external_ref 撞 unique、category 不存在（FK）；其他往上丟
 fn map_product_db_error(err: sqlx::Error) -> ApiError {
     if let sqlx::Error::Database(e) = &err {
         if e.is_unique_violation() {
+            if e.constraint().is_some_and(|c| c.contains("external_ref")) {
+                return ApiError::field("external_ref", "這個商品編號已經有別的商品在用");
+            }
             return ApiError::field("slug", "這個網址代稱已經有人用了");
         }
         if e.is_foreign_key_violation() {
@@ -243,8 +264,8 @@ pub async fn create(db: &PgPool, input: ProductInput) -> Result<AdminProduct, Ap
     let slug = clean(&input.slug).unwrap_or_else(random_slug);
     let mut tx = db.begin().await?;
     sqlx::query(
-        "INSERT INTO products (id, slug, name, description, category_id, status, option1_name, option2_name, sort_order)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        "INSERT INTO products (id, slug, name, description, category_id, status, option1_name, option2_name, sort_order, external_ref)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(id)
     .bind(&slug)
@@ -255,6 +276,7 @@ pub async fn create(db: &PgPool, input: ProductInput) -> Result<AdminProduct, Ap
     .bind(clean(&input.option1_name))
     .bind(clean(&input.option2_name))
     .bind(input.sort_order.unwrap_or(0))
+    .bind(clean(&input.external_ref))
     .execute(&mut *tx)
     .await
     .map_err(map_product_db_error)?;
@@ -269,7 +291,7 @@ pub async fn update(db: &PgPool, id: Uuid, input: ProductInput) -> Result<AdminP
     let mut tx = db.begin().await?;
     let result = sqlx::query(
         "UPDATE products SET slug = $2, name = $3, description = $4, category_id = $5, status = $6,
-                option1_name = $7, option2_name = $8, sort_order = $9, updated_at = now()
+                option1_name = $7, option2_name = $8, sort_order = $9, external_ref = COALESCE($10, external_ref), updated_at = now()
          WHERE id = $1",
     )
     .bind(id)
@@ -281,6 +303,7 @@ pub async fn update(db: &PgPool, id: Uuid, input: ProductInput) -> Result<AdminP
     .bind(clean(&input.option1_name))
     .bind(clean(&input.option2_name))
     .bind(input.sort_order.unwrap_or(0))
+    .bind(clean(&input.external_ref))
     .execute(&mut *tx)
     .await
     .map_err(map_product_db_error)?;
@@ -438,6 +461,34 @@ pub async fn get_admin(db: &PgPool, id: Uuid) -> Result<Option<AdminProduct>, Ap
         variants,
         images,
     }))
+}
+
+/// 匯入用：依蝦皮商品編號找既有商品（含規格與圖片）
+pub async fn find_by_external_ref(
+    db: &PgPool,
+    external_ref: &str,
+) -> Result<Option<AdminProduct>, ApiError> {
+    let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM products WHERE external_ref = $1")
+        .bind(external_ref.trim())
+        .fetch_optional(db)
+        .await?;
+    match id {
+        Some(id) => get_admin(db, id).await,
+        None => Ok(None),
+    }
+}
+
+/// 匯入預覽用：這些商品編號裡哪些已經存在
+pub async fn existing_external_refs(
+    db: &PgPool,
+    refs: &[String],
+) -> Result<HashSet<String>, ApiError> {
+    let found: Vec<String> =
+        sqlx::query_scalar("SELECT external_ref FROM products WHERE external_ref = ANY($1)")
+            .bind(refs)
+            .fetch_all(db)
+            .await?;
+    Ok(found.into_iter().collect())
 }
 
 /// 刪除 = 封存（規格 §3）。回 false 表示沒這個商品。
@@ -667,6 +718,7 @@ mod tests {
                 image_path: None,
             }],
             images: vec![],
+            external_ref: None,
         }
     }
 

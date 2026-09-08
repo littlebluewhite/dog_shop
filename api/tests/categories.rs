@@ -170,3 +170,27 @@ async fn bad_uuid_in_path_is_validation_error(pool: PgPool) {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "VALIDATION");
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn find_or_create_by_name_reuses_the_first_match(pool: PgPool) {
+    use dog_shop_api::domain::categories;
+    let a = categories::find_or_create_by_name(&pool, " 狗糧 ")
+        .await
+        .unwrap();
+    assert_eq!(a.name, "狗糧");
+    let b = categories::find_or_create_by_name(&pool, "狗糧")
+        .await
+        .unwrap();
+    assert_eq!(a.id, b.id, "同名不重複建");
+    // 已有兩個同名時取 sort_order 最小、id 最小的那個
+    let older = categories::create(&pool, None, "零食", 0).await.unwrap();
+    let _newer = categories::create(&pool, None, "零食", 5).await.unwrap();
+    let c = categories::find_or_create_by_name(&pool, "零食")
+        .await
+        .unwrap();
+    assert_eq!(c.id, older.id);
+    let err = categories::find_or_create_by_name(&pool, "   ")
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "VALIDATION");
+}

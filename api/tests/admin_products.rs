@@ -420,3 +420,105 @@ async fn variant_with_orders_is_deactivated_not_deleted(pool: PgPool) {
     assert!(variants.iter().all(|v| v["id"] != free_variant));
     assert!(variants.iter().any(|v| v["id"] == kept_variant["id"]));
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn external_ref_is_kept_across_admin_updates(pool: PgPool) {
+    use dog_shop_api::domain::products::{self, ImageInput, ProductInput, VariantInput};
+    let created = products::create(
+        &pool,
+        ProductInput {
+            name: "匯入狗糧".to_string(),
+            slug: None,
+            description: None,
+            category_id: None,
+            status: "draft".to_string(),
+            option1_name: None,
+            option2_name: None,
+            sort_order: None,
+            variants: vec![VariantInput {
+                id: None,
+                option1_value: None,
+                option2_value: None,
+                sku: None,
+                price: 100,
+                compare_at_price: None,
+                stock: 1,
+                is_active: None,
+                image_path: None,
+            }],
+            images: Vec::<ImageInput>::new(),
+            external_ref: Some("SHOPEE-1".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(created.product.external_ref.as_deref(), Some("SHOPEE-1"));
+
+    // 後台表單 PUT 不帶 external_ref → 不能被清掉
+    let app = common::app(pool.clone());
+    let cookie = common::admin_cookie(&app, &pool).await;
+    let mut body = sample_product("draft");
+    body["name"] = json!("改名");
+    let (status, _, _) = common::send(
+        &app,
+        common::req(
+            "PUT",
+            &format!("/api/admin/products/{}", created.product.id),
+            Some(&cookie),
+            Some(body),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let found = products::find_by_external_ref(&pool, "SHOPEE-1")
+        .await
+        .unwrap()
+        .expect("external_ref 還在");
+    assert_eq!(found.product.id, created.product.id);
+    assert_eq!(found.product.name, "改名");
+
+    // 同一個 external_ref 不能給第二個商品
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            "/api/admin/products",
+            Some(&cookie),
+            Some({
+                let mut b = sample_product("draft");
+                b["external_ref"] = json!("SHOPEE-1");
+                b
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body["error"]["details"]["fields"]["external_ref"],
+        json!("這個商品編號已經有別的商品在用")
+    );
+
+    let refs =
+        products::existing_external_refs(&pool, &["SHOPEE-1".to_string(), "SHOPEE-2".to_string()])
+            .await
+            .unwrap();
+    assert!(refs.contains("SHOPEE-1") && !refs.contains("SHOPEE-2"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn price_above_max_is_rejected(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let cookie = common::admin_cookie(&app, &pool).await;
+    let mut body = sample_product("draft");
+    body["variants"][0]["price"] = json!(10_000_000);
+    let (status, body, _) = common::send(
+        &app,
+        common::req("POST", "/api/admin/products", Some(&cookie), Some(body)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body["error"]["details"]["fields"]["variants.0.price"],
+        json!("價格最多 9,999,999")
+    );
+}
