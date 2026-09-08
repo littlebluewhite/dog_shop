@@ -16,6 +16,9 @@ pub struct Config {
     pub ecpay: EcpayConfig,
     /// SMTP；None 表示沒設定，Email 只記 log（與規格不同之處 22）
     pub smtp: Option<SmtpConfig>,
+    /// 沒設 SMTP 時要不要把信件內文也寫進 log。內文含重設連結與訪客訂單網址（規格 §11），
+    /// 只有 MAIL_LOG_BODY=1 才開，正式環境不要開
+    pub mail_log_body: bool,
 }
 
 /// 手動實作：database_url 含 DB 密碼，不能被 {:?} 印出來（規格 §11）。
@@ -28,6 +31,7 @@ impl std::fmt::Debug for Config {
             .field("upload_dir", &self.upload_dir)
             .field("ecpay", &self.ecpay)
             .field("smtp", &self.smtp)
+            .field("mail_log_body", &self.mail_log_body)
             .finish()
     }
 }
@@ -115,6 +119,14 @@ fn env_trimmed(name: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// 布林開關：只有 "1"／"true"（不分大小寫）算開；沒設或其他值都是關
+fn flag_enabled(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true")
+    )
+}
+
 /// 讀一組憑證：stage 時空值退回公開測試憑證；prod 時三個都必填（與規格不同之處 24）
 fn credentials(
     prefix: &str,
@@ -185,6 +197,7 @@ impl Config {
             upload_dir,
             ecpay,
             smtp,
+            mail_log_body: flag_enabled(env_trimmed("MAIL_LOG_BODY").as_deref()),
         })
     }
 
@@ -209,6 +222,7 @@ impl Config {
                 },
             },
             smtp: None,
+            mail_log_body: false,
         }
     }
 
@@ -275,6 +289,20 @@ mod tests {
         assert!(text.contains("2000132"));
         assert!(text.contains("smtp.example.com"));
         assert!(text.contains("mailer"));
+    }
+
+    /// 內文含重設 token 與 guest_token（規格 §11）：預設不印，要明確 opt-in。
+    /// 直接測解讀規則而不是設環境變數：std::env::set_var 在 edition 2024 是 unsafe，
+    /// 而且會影響同時跑的其他測試
+    #[test]
+    fn mail_log_body_defaults_off_and_needs_explicit_opt_in() {
+        assert!(!flag_enabled(None), "沒設就是關");
+        assert!(flag_enabled(Some("1")));
+        assert!(flag_enabled(Some("true")));
+        assert!(flag_enabled(Some("TRUE")));
+        assert!(!flag_enabled(Some("false")));
+        assert!(!flag_enabled(Some("0")));
+        assert!(!Config::for_tests(PathBuf::from("/tmp")).mail_log_body);
     }
 
     #[test]

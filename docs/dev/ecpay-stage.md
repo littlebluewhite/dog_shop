@@ -6,7 +6,7 @@
 
 1. `docker compose -f deploy/docker-compose.dev.yml up -d db`
 2. 讓綠界打得到你的機器：`cloudflared tunnel --url http://localhost:5173`（沒有就 `brew install cloudflared`），記下它印出的 `https://xxxx.trycloudflare.com`。
-3. 根目錄 `.env`：`PUBLIC_BASE_URL=https://xxxx.trycloudflare.com`、`ECPAY_ENV=stage`（AIO／發票憑證留空會用公開測試憑證）。要看信件內容再加 `RUST_LOG=info,tower_http=info,mail_body=debug`（只在開發機；內文含重設連結）。
+3. 根目錄 `.env`：`PUBLIC_BASE_URL=https://xxxx.trycloudflare.com`、`ECPAY_ENV=stage`（AIO／發票憑證留空會用公開測試憑證）。要看信件內容再設 `MAIL_LOG_BODY=1`（只在本機開發；內文含重設連結與訪客訂單網址）。
 4. 啟動：`export PATH="$HOME/.cargo/bin:$PATH" && cargo run --manifest-path api/Cargo.toml`、`pnpm -C web dev`。Vite 會把 `/api` 轉到 :8080，所以 cloudflared 只要指到 :5173。
 
 ## 信用卡
@@ -52,7 +52,7 @@
 
 ## 忘記密碼
 
-`/forgot-password` 送出 → api log 有 `Email（未設定 SMTP，只記 log）subject=【…】重設密碼`；開 `mail_body=debug` 才看得到連結，貼到瀏覽器可以重設。10 分鐘內再送一次不會再寄（log：`已寄過重設信，略過`）。
+`/forgot-password` 送出 → api log 有 `Email（未設定 SMTP，只記 log）subject=【…】重設密碼`；設 `MAIL_LOG_BODY=1` 才看得到連結，貼到瀏覽器可以重設。10 分鐘內再送一次不會再寄（log：`已寄過重設信，略過`）。
 
 ## 收工
 

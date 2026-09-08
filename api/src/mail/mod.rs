@@ -32,8 +32,9 @@ pub enum Mailer {
         from: Mailbox,
         send_timeout: Duration,
     },
-    /// 只記 to／subject（info）；內文只在 RUST_LOG 開 `mail_body=debug` 時輸出（含重設連結，正式環境不要開）
-    Log,
+    /// 只記 to／subject（info）；內文含重設連結與訪客訂單網址（規格 §11），
+    /// 只有明確設定 `MAIL_LOG_BODY=1` 才會輸出（只在本機開發用）
+    Log { log_body: bool },
     /// 測試用：全部收進 Vec
     Capture(Arc<Mutex<Vec<Email>>>),
 }
@@ -42,7 +43,9 @@ impl Mailer {
     pub fn from_config(cfg: &Config) -> anyhow::Result<Self> {
         let Some(smtp) = &cfg.smtp else {
             tracing::warn!("SMTP 未設定（SMTP_HOST 空白）：Email 只會記 log，不會真的寄出");
-            return Ok(Self::Log);
+            return Ok(Self::Log {
+                log_body: cfg.mail_log_body,
+            });
         };
         // 465 = 一開始就是 TLS；其他（587、25）= STARTTLS
         let mut builder = if smtp.port == 465 {
@@ -95,9 +98,11 @@ impl Mailer {
                     .context("SMTP 寄送失敗")?;
                 Ok(())
             }
-            Self::Log => {
+            Self::Log { log_body } => {
                 tracing::info!(to = %email.to, subject = %email.subject, "Email（未設定 SMTP，只記 log）");
-                tracing::debug!(target: "mail_body", to = %email.to, "{}", email.text);
+                if let Some(body) = body_log_line(&email, *log_body) {
+                    tracing::info!(target: "mail_body", to = %email.to, "{body}");
+                }
                 Ok(())
             }
             Self::Capture(sink) => {
@@ -105,5 +110,39 @@ impl Mailer {
                 Ok(())
             }
         }
+    }
+}
+
+/// 要寫進 log 的信件內文。內文含密碼重設連結與訪客訂單網址的 token（規格 §11），
+/// 所以由 `MAIL_LOG_BODY` 這個旗標把關，預設回 None
+fn body_log_line(email: &Email, log_body: bool) -> Option<String> {
+    log_body.then(|| email.text.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn email() -> Email {
+        Email {
+            to: "buyer@test.local".to_string(),
+            subject: "重設密碼".to_string(),
+            text: "請點 http://localhost:5173/reset/SECRET-TOKEN 重設".to_string(),
+            html: "<p>SECRET-TOKEN</p>".to_string(),
+        }
+    }
+
+    #[test]
+    fn log_mailer_without_opt_in_does_not_format_body() {
+        assert_eq!(
+            body_log_line(&email(), false),
+            None,
+            "預設不能把含 token 的內文寫進 log"
+        );
+        assert_eq!(
+            body_log_line(&email(), true).as_deref(),
+            Some(email().text.as_str()),
+            "明確 opt-in 才輸出內文"
+        );
     }
 }
