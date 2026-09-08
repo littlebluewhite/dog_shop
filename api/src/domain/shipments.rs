@@ -38,6 +38,7 @@ use uuid::Uuid;
 use crate::domain::jobs;
 use crate::domain::orders::{SHIPPING_HOME, STATUS_COMPLETED, STATUS_PAID, STATUS_SHIPPED};
 use crate::ecpay::logistics::{self, CreateOk, StatusNotification, StoreUpdate};
+use crate::ecpay::time;
 use crate::error::ApiError;
 
 /// 後台與回呼用的完整 shipments 列（訂單頁的 orders::ShipmentRow 是子集合）。raw 不給前端
@@ -97,6 +98,13 @@ pub enum StatusOutcome {
     },
     /// 代碼不在對照表、或不能倒退／重複：只記代碼、訊息與 raw
     Recorded,
+    /// 這則通知比已處理的那則舊（UpdateStatusDate）：整則忽略，什麼都不寫
+    Stale,
+}
+
+/// 通知原文裡的欄位（沒有就空字串）
+fn raw_field<'a>(n: &'a StatusNotification, name: &str) -> &'a str {
+    n.raw.get(name).and_then(Value::as_str).unwrap_or("")
 }
 
 /// 套用一則狀態通知（規格 §8.3、與規格不同之處 42）。一個交易：先鎖 orders 列、再鎖 shipments 列
@@ -123,19 +131,37 @@ pub async fn apply_status(db: &PgPool, n: &StatusNotification) -> Result<StatusO
             .bind(order_id)
             .fetch_one(&mut *tx)
             .await?;
-    let current: String =
-        sqlx::query_scalar("SELECT status FROM shipments WHERE order_id = $1 FOR UPDATE")
-            .bind(order_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let (current, last_update_at): (String, Option<String>) = sqlx::query_as(
+        "SELECT status, raw -> 'last_notification' ->> 'UpdateStatusDate'
+         FROM shipments WHERE order_id = $1 FOR UPDATE",
+    )
+    .bind(order_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    // 綠界重送較早的通知不能蓋掉後來的（例如退回之後又收到舊的到店，警示就消失了）；
+    // 時間相同或缺一邊時照舊處理（不倒退規則已擋掉重複）
+    if let (Some(update_at), Some(stored)) = (
+        n.update_at,
+        last_update_at.as_deref().and_then(time::parse_datetime),
+    ) && update_at < stored
+    {
+        tx.rollback().await?;
+        tracing::info!(order_id = %order_id, rtn_code = n.rtn_code, "綠界物流通知比已處理的舊，忽略");
+        return Ok(StatusOutcome::Stale);
+    }
     let next =
         logistics::shipment_status_for(n.rtn_code).filter(|next| should_apply(&current, next));
     sqlx::query(
-        // 認領中（'creating'）不能被通知的代碼換掉，否則 claim_create 的守衛會失效（審查 I2）
+        // 認領中（'creating'）不能被通知的代碼換掉，否則 claim_create 的守衛會失效（審查 I2）。
+        // 建單回應遺失時，識別欄位從通知補回來（只在 NULL 時），這筆訂單才出得了貨
         "UPDATE shipments SET status = COALESCE($2, status),
                 last_status_code = CASE WHEN last_status_code = 'creating' THEN last_status_code ELSE $3 END,
                 last_status_msg = $4,
-                raw = COALESCE(raw, '{}'::jsonb) || $5, updated_at = now()
+                raw = COALESCE(raw, '{}'::jsonb) || $5,
+                ecpay_logistics_id = COALESCE(ecpay_logistics_id, NULLIF($6, '')),
+                cvs_payment_no = COALESCE(cvs_payment_no, NULLIF($7, '')),
+                cvs_validation_no = COALESCE(cvs_validation_no, NULLIF($8, '')),
+                updated_at = now()
          WHERE order_id = $1",
     )
     .bind(order_id)
@@ -143,6 +169,9 @@ pub async fn apply_status(db: &PgPool, n: &StatusNotification) -> Result<StatusO
     .bind(n.rtn_code.to_string())
     .bind(&n.rtn_msg)
     .bind(json!({ "last_notification": n.raw }))
+    .bind(&n.logistics_id)
+    .bind(raw_field(n, "CVSPaymentNo"))
+    .bind(raw_field(n, "CVSValidationNo"))
     .execute(&mut *tx)
     .await?;
     let mut order_completed = false;
@@ -165,22 +194,31 @@ pub async fn apply_status(db: &PgPool, n: &StatusNotification) -> Result<StatusO
 }
 
 /// 更新門市通知（與規格不同之處 35）：只記一句話與 raw.store_updates（追加），不改狀態。
-/// 回 false = 找不到 AllPayLogisticsID
+/// 重播（同一則已經記過）是 no-op，仍回 true；回 false = 找不到 AllPayLogisticsID
 pub async fn apply_store_update(db: &PgPool, u: &StoreUpdate) -> Result<bool, ApiError> {
-    let n = sqlx::query(
+    let found: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM shipments WHERE ecpay_logistics_id = $1)")
+            .bind(&u.logistics_id)
+            .fetch_one(db)
+            .await?;
+    if !found {
+        return Ok(false);
+    }
+    // 同一則重播是 no-op（規格 §14）：不追加第二筆，也不把 last_status_msg 退回舊的
+    sqlx::query(
         "UPDATE shipments SET last_status_msg = $2,
                 raw = jsonb_set(COALESCE(raw, '{}'::jsonb), '{store_updates}',
                                 COALESCE(raw -> 'store_updates', '[]'::jsonb) || $3::jsonb),
                 updated_at = now()
-         WHERE ecpay_logistics_id = $1",
+         WHERE ecpay_logistics_id = $1
+           AND NOT (COALESCE(raw -> 'store_updates', '[]'::jsonb) @> $3::jsonb)",
     )
     .bind(&u.logistics_id)
     .bind(logistics::store_update_message(u))
     .bind(json!([u.raw]))
     .execute(db)
-    .await?
-    .rows_affected();
-    Ok(n > 0)
+    .await?;
+    Ok(true)
 }
 
 /// last_status_code 的三個特殊值（不是綠界代碼）：建單中、綠界拒絕、連線失敗（與規格不同之處 41）
@@ -241,44 +279,50 @@ pub async fn claim_create(
     Ok(n > 0)
 }
 
-/// 綠界拒絕或連不上：記原因（給老闆看），訂單維持 paid、shipments 維持 pending
+/// 綠界拒絕或連不上：記原因（給老闆看），訂單維持 paid、shipments 維持 pending。
+/// 只認自己那次的 MerchantTradeNo：回 false = 這次嘗試已被重新認領，什麼都沒寫
 pub async fn record_create_failure(
     db: &PgPool,
     order_id: Uuid,
+    merchant_trade_no: &str,
     code: &str,
     msg: &str,
     response_text: Option<&str>,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     let msg: String = msg.chars().take(200).collect();
     let patch = match response_text {
         Some(t) => json!({ "create_response_text": t.chars().take(2000).collect::<String>() }),
         None => json!({}),
     };
-    sqlx::query(
+    let n = sqlx::query(
         "UPDATE shipments SET last_status_code = $2, last_status_msg = $3,
                 raw = COALESCE(raw, '{}'::jsonb) || $4, updated_at = now()
-         WHERE order_id = $1",
+         WHERE order_id = $1 AND ecpay_merchant_trade_no = $5",
     )
     .bind(order_id)
     .bind(code)
     .bind(msg)
     .bind(patch)
+    .bind(merchant_trade_no)
     .execute(db)
-    .await?;
-    Ok(())
+    .await?
+    .rows_affected();
+    Ok(n > 0)
 }
 
-/// 綠界成功：先把單號存起來（自己一句 UPDATE，不在收尾的交易裡），收尾失敗時下次不會重複建單
+/// 綠界成功：先把單號存起來（自己一句 UPDATE，不在收尾的交易裡），收尾失敗時下次不會重複建單。
+/// 只認自己那次的 MerchantTradeNo：回 false = 這次嘗試已被重新認領，什麼都沒寫
 pub async fn record_create_ok(
     db: &PgPool,
     order_id: Uuid,
+    merchant_trade_no: &str,
     ok: &CreateOk,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<bool, sqlx::Error> {
+    let n = sqlx::query(
         "UPDATE shipments SET ecpay_logistics_id = $2, cvs_payment_no = NULLIF($3, ''), cvs_validation_no = NULLIF($4, ''),
                 last_status_code = $5, last_status_msg = $6,
                 raw = COALESCE(raw, '{}'::jsonb) || $7, updated_at = now()
-         WHERE order_id = $1",
+         WHERE order_id = $1 AND ecpay_merchant_trade_no = $8",
     )
     .bind(order_id)
     .bind(&ok.logistics_id)
@@ -287,9 +331,11 @@ pub async fn record_create_ok(
     .bind(ok.rtn_code.to_string())
     .bind(&ok.rtn_msg)
     .bind(json!({ "create_response": ok.raw }))
+    .bind(merchant_trade_no)
     .execute(db)
-    .await?;
-    Ok(())
+    .await?
+    .rows_affected();
+    Ok(n > 0)
 }
 
 /// orders → shipped、shipped_at、排出貨信（超商與宅配共用；規格 §12、計畫 3 交接 3）。呼叫者已鎖住訂單列

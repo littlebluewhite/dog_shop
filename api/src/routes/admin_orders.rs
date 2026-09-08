@@ -110,6 +110,9 @@ pub(crate) async fn admin_detail(state: &AppState, id: Uuid) -> ApiResult<Json<A
         .ok_or(ApiError::NotFound)
 }
 
+/// 這次建單的結果寫不進去（列已被下一次嘗試認領走）時給老闆看的文案
+const RECLAIMED: &str = "這筆物流單已由另一次建單接手，請重新整理後確認";
+
 /// 建立綠界 C2C 物流單（規格 §8.3、與規格不同之處 36、39、40、41）：同步呼叫，錯誤直接回給後台。
 /// 認領 → 打綠界 → 存單號 → 收尾（shipments created、orders shipped、排出貨信）
 async fn ship_cvs(
@@ -143,8 +146,9 @@ async fn ship_cvs(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| ApiError::field("shipment", "訂單沒有取貨門市"))?;
 
-    // 上次綠界建單成功、單號已存，但收尾沒做完（例如當時資料庫斷線）：不再打綠界，只補收尾
-    if shipment.ecpay_logistics_id.is_some() && shipment.status == SHIPMENT_PENDING {
+    // 綠界已經有這張單（單號存下來了，或狀態通知補回來的）：不再打綠界，只補收尾。
+    // finalize_cvs 只把 pending → created、paid → shipped，已前進的狀態不會倒退
+    if shipment.ecpay_logistics_id.is_some() {
         if !shipments::finalize_cvs(&state.db, id).await? {
             return Err(ApiError::field("status", "只有已付款的訂單能出貨"));
         }
@@ -202,8 +206,19 @@ async fn ship_cvs(
         Ok(body) => body,
         Err(e) => {
             tracing::error!(order_id = %id, merchant_trade_no = %req.merchant_trade_no, error = %format!("{e:#}"), "綠界建立物流單連線失敗");
-            shipments::record_create_failure(&state.db, id, CREATE_ERROR, "連線綠界失敗", None)
-                .await?;
+            if !shipments::record_create_failure(
+                &state.db,
+                id,
+                &req.merchant_trade_no,
+                CREATE_ERROR,
+                "連線綠界失敗",
+                Some(&format!("{e:#}")),
+            )
+            .await?
+            {
+                tracing::warn!(order_id = %id, merchant_trade_no = %req.merchant_trade_no, "連線失敗的結果寫不進去：這次嘗試已被重新認領");
+                return Err(ApiError::EcpayError(RECLAIMED.to_string()));
+            }
             return Err(ApiError::EcpayError(
                 "連線綠界失敗，請先到綠界廠商後台確認這筆是否已建單，再決定要不要重試".to_string(),
             ));
@@ -212,7 +227,10 @@ async fn ship_cvs(
     match logistics::parse_create_response(&state.config.ecpay, &body) {
         Ok(ok) => {
             tracing::info!(order_id = %id, logistics_id = %ok.logistics_id, rtn_code = ok.rtn_code, "綠界物流單已建立");
-            shipments::record_create_ok(&state.db, id, &ok).await?;
+            if !shipments::record_create_ok(&state.db, id, &req.merchant_trade_no, &ok).await? {
+                tracing::error!(order_id = %id, merchant_trade_no = %req.merchant_trade_no, logistics_id = %ok.logistics_id, "綠界已建單，但這次嘗試已被重新認領；單號只留在 log，請到綠界廠商後台對帳");
+                return Err(ApiError::EcpayError(RECLAIMED.to_string()));
+            }
             if !shipments::finalize_cvs(&state.db, id).await? {
                 return Err(ApiError::field("status", "訂單狀態已改變，請重新整理"));
             }
@@ -231,8 +249,19 @@ async fn ship_cvs(
                 }
                 CreateError::Malformed(m) => format!("回應格式不符：{m}"),
             };
-            shipments::record_create_failure(&state.db, id, CREATE_FAILED, &msg, Some(&body))
-                .await?;
+            if !shipments::record_create_failure(
+                &state.db,
+                id,
+                &req.merchant_trade_no,
+                CREATE_FAILED,
+                &msg,
+                Some(&body),
+            )
+            .await?
+            {
+                tracing::warn!(order_id = %id, merchant_trade_no = %req.merchant_trade_no, "建單失敗的結果寫不進去：這次嘗試已被重新認領");
+                return Err(ApiError::EcpayError(RECLAIMED.to_string()));
+            }
             Err(ApiError::EcpayError(
                 "綠界沒有接受這張物流單，原因請看訂單頁的出貨區".to_string(),
             ))

@@ -423,7 +423,49 @@ async fn shipped_cvs_order(app: &Router, pool: &PgPool, mtn: &str, logistics_id:
     id
 }
 
+/// 建一筆已付款的超商訂單（寄件人已設定，建單流程沒跑），回 (order_id, order_no)
+async fn paid_cvs_order(app: &Router, pool: &PgPool) -> (Uuid, String) {
+    let mut all = settings::get_all(pool).await.unwrap();
+    all.sender.name = "狗狗商店".to_string();
+    all.sender.phone = "0987654321".to_string();
+    settings::put_all(pool, &all).await.unwrap();
+
+    let (variant, _) = common::active_product(pool, "雞肉狗糧", 300, 5).await;
+    let token = common::cvs_store_token(pool).await;
+    let (status, created, _) = common::send(
+        app,
+        common::req(
+            "POST",
+            "/api/orders",
+            None,
+            Some(cvs_order_body(&variant.to_string(), &token)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = Uuid::parse_str(created["order_id"].as_str().unwrap()).unwrap();
+    let order_no: String = sqlx::query_scalar(
+        "UPDATE orders SET status = 'paid', paid_at = now() WHERE id = $1 RETURNING order_no",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (id, order_no)
+}
+
 fn status_fields(mtn: &str, logistics_id: &str, code: &str, msg: &str) -> Vec<(String, String)> {
+    status_fields_at(mtn, logistics_id, code, msg, "2026/09/10 18:30:00")
+}
+
+/// 同上，但自訂 UpdateStatusDate（通知新鮮度用）。索引 11 是 CVSPaymentNo
+fn status_fields_at(
+    mtn: &str,
+    logistics_id: &str,
+    code: &str,
+    msg: &str,
+    update_at: &str,
+) -> Vec<(String, String)> {
     f(&[
         ("MerchantID", "2000933"),
         ("MerchantTradeNo", mtn),
@@ -433,7 +475,7 @@ fn status_fields(mtn: &str, logistics_id: &str, code: &str, msg: &str) -> Vec<(S
         ("LogisticsType", "CVS"),
         ("LogisticsSubType", "UNIMARTC2C"),
         ("GoodsAmount", "600"),
-        ("UpdateStatusDate", "2026/09/10 18:30:00"),
+        ("UpdateStatusDate", update_at),
         ("ReceiverName", "王小明"),
         ("ReceiverCellPhone", "0912345678"),
         ("CVSPaymentNo", "F0001234"),
@@ -652,7 +694,8 @@ async fn status_callback_unknown_code_only_records_and_falls_back_to_logistics_i
 
 /// 審查 I2：`apply_status` 不能把建單認領用的 'creating' 標記換成綠界代碼 ——
 /// 代碼沒對照時 status 仍是 pending、ecpay_logistics_id 仍是 NULL，認領守衛就會整個失效，
-/// 同一秒內的第二次點擊會用 L02 再建一張真的物流單
+/// 同一秒內的第二次點擊會用 L02 再建一張真的物流單。
+/// 通知不帶 AllPayLogisticsID（帶了就走 C1 的回填，ship-cvs 會直接補收尾）
 #[sqlx::test(migrations = "./migrations")]
 async fn status_notification_does_not_release_the_create_claim(pool: PgPool) {
     let (app, state) = common::app_with_state(pool.clone());
@@ -700,7 +743,7 @@ async fn status_notification_does_not_release_the_create_claim(pool: PgPool) {
     let (status, text) = ecpay_post(
         &app,
         "/api/ecpay/logistics/status",
-        status_fields(&mtn, "10040", "2101", "門市關轉店"),
+        status_fields(&mtn, "", "2101", "門市關轉店"),
     )
     .await;
     assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
@@ -743,6 +786,169 @@ async fn status_notification_does_not_release_the_create_claim(pool: PgPool) {
     );
 }
 
+/// C1：綠界建了單、我們的回應遺失（沒存到單號）時，狀態通知要把識別欄位補回來，
+/// 之後老闆再按「建立物流單」只補收尾 —— 不然這筆 paid 訂單永遠出不了貨
+#[sqlx::test(migrations = "./migrations")]
+async fn status_callback_backfills_logistics_id_and_retry_only_finalizes(pool: PgPool) {
+    let (app, state) = common::app_with_state(pool.clone());
+    let admin = common::admin_cookie(&app, &pool).await;
+    let (id, order_no) = paid_cvs_order(&app, &pool).await;
+    let mtn = format!("{order_no}L01");
+    sqlx::query(
+        "UPDATE shipments SET status = 'pending', last_status_code = 'create_error',
+                ecpay_merchant_trade_no = $2, ecpay_logistics_id = NULL WHERE order_id = $1",
+    )
+    .bind(id)
+    .bind(&mtn)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut fields = status_fields(&mtn, "PROBE1", "300", "訂單處理中(已收到訂單資料)");
+    fields[11].1 = "F0009999".to_string(); // CVSPaymentNo
+    let (status, text) = ecpay_post(&app, "/api/ecpay/logistics/status", fields).await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+    let (s, lid, pay): (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT status, ecpay_logistics_id, cvs_payment_no FROM shipments WHERE order_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (s.as_str(), lid.as_deref(), pay.as_deref()),
+        ("created", Some("PROBE1"), Some("F0009999")),
+        "通知要回填缺的識別欄位"
+    );
+
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            &format!("/api/admin/orders/{id}/ship-cvs"),
+            Some(&admin),
+            Some(json!({})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "shipped");
+    assert_eq!(body["shipment"]["status"], "created");
+    assert!(
+        common::fake_logistics(&state).calls().is_empty(),
+        "不再打綠界"
+    );
+}
+
+/// C1：收尾失敗後 shipment 已被通知推到 in_transit，重按「建立物流單」仍要補收尾
+#[sqlx::test(migrations = "./migrations")]
+async fn retry_after_finalize_failure_finalizes_even_if_status_advanced(pool: PgPool) {
+    let (app, state) = common::app_with_state(pool.clone());
+    let admin = common::admin_cookie(&app, &pool).await;
+    let (id, order_no) = paid_cvs_order(&app, &pool).await;
+    let mtn = format!("{order_no}L01");
+    sqlx::query(
+        "UPDATE shipments SET status = 'pending', ecpay_merchant_trade_no = $2,
+                ecpay_logistics_id = 'PROBE2' WHERE order_id = $1",
+    )
+    .bind(id)
+    .bind(&mtn)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, text) = ecpay_post(
+        &app,
+        "/api/ecpay/logistics/status",
+        status_fields(&mtn, "PROBE2", "2030", "物流中心驗收成功"),
+    )
+    .await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+    assert_eq!(snapshot(&pool, id).await.0, "in_transit");
+
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            &format!("/api/admin/orders/{id}/ship-cvs"),
+            Some(&admin),
+            Some(json!({})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "shipped");
+    assert_eq!(
+        body["shipment"]["status"], "in_transit",
+        "收尾不會讓已前進的狀態倒退"
+    );
+    assert!(
+        common::fake_logistics(&state).calls().is_empty(),
+        "不再打綠界"
+    );
+}
+
+/// C3：退回之後綠界重送較早的到店通知，不能把 returned 洗回 arrived
+/// （儀表板的退回警示會消失、14 天後還會被自動完成）
+#[sqlx::test(migrations = "./migrations")]
+async fn stale_arrival_replay_does_not_undo_a_return(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let id = shipped_cvs_order(&app, &pool, "DS260908GGGGL01", "10042").await;
+    let post = |code: &'static str, msg: &'static str, at: &'static str| {
+        let app = app.clone();
+        async move {
+            ecpay_post(
+                &app,
+                "/api/ecpay/logistics/status",
+                status_fields_at("DS260908GGGGL01", "10042", code, msg, at),
+            )
+            .await
+        }
+    };
+
+    assert_eq!(
+        post("2073", "商品配達買家取貨門市", "2026/09/10 10:00:00")
+            .await
+            .1,
+        "1|OK"
+    );
+    assert_eq!(snapshot(&pool, id).await.0, "arrived");
+
+    assert_eq!(
+        post("2074", "消費者七天未取", "2026/09/17 09:00:00")
+            .await
+            .1,
+        "1|OK"
+    );
+    let (s, _, code, _, _) = snapshot(&pool, id).await;
+    assert_eq!((s.as_str(), code.as_deref()), ("returned", Some("2074")));
+
+    // 綠界重送較早的 2073
+    let (status, text) = post("2073", "商品配達買家取貨門市", "2026/09/10 10:00:00").await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+    let (s, _, code, _, _) = snapshot(&pool, id).await;
+    assert_eq!(
+        (s.as_str(), code.as_deref()),
+        ("returned", Some("2074")),
+        "比已處理的舊就整則忽略"
+    );
+    let raw: Value = sqlx::query_scalar("SELECT raw FROM shipments WHERE order_id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(raw["last_notification"]["RtnCode"], "2074");
+
+    // 之後真的重新配達：照常前進
+    assert_eq!(
+        post("2098", "包裹重新配達取件門市", "2026/09/20 08:00:00")
+            .await
+            .1,
+        "1|OK"
+    );
+    assert_eq!(snapshot(&pool, id).await.0, "arrived");
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn store_update_records_message_without_changing_status(pool: PgPool) {
     let app = common::app(pool.clone());
@@ -769,8 +975,10 @@ async fn store_update_records_message_without_changing_status(pool: PgPool) {
         .unwrap();
     assert_eq!(raw["store_updates"].as_array().unwrap().len(), 1);
 
-    // 第二次追加、不覆蓋
-    ecpay_post(&app, "/api/ecpay/logistics/store-update", fields).await;
+    // 不一樣的異動才追加（同一則重播是 no-op，見 store_update_replay_is_a_no_op）
+    let mut later = fields;
+    later[5].1 = "04".to_string(); // Status：門市臨時關轉店
+    ecpay_post(&app, "/api/ecpay/logistics/store-update", later).await;
     let raw: Value = sqlx::query_scalar("SELECT raw FROM shipments WHERE order_id = $1")
         .bind(id)
         .fetch_one(&pool)
@@ -802,5 +1010,58 @@ async fn store_update_records_message_without_changing_status(pool: PgPool) {
     assert_eq!(
         (status, text.as_str()),
         (StatusCode::BAD_REQUEST, "0|CheckMacValue Error")
+    );
+}
+
+async fn store_updates_len(pool: &PgPool, id: Uuid) -> usize {
+    let raw: Value = sqlx::query_scalar("SELECT raw FROM shipments WHERE order_id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    raw["store_updates"].as_array().unwrap().len()
+}
+
+/// C4（規格 §14）：綠界重送同一則更新門市通知要是 no-op —— 不能追加第二筆，
+/// 也不能把 last_status_msg 退回舊的
+#[sqlx::test(migrations = "./migrations")]
+async fn store_update_replay_is_a_no_op(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let id = shipped_cvs_order(&app, &pool, "DS260908HHHHL01", "10043").await;
+    let a = f(&[
+        ("MerchantID", "2000933"),
+        ("AllPayLogisticsID", "10043"),
+        ("GoodsName", "雞肉狗糧"),
+        ("GoodsAmount", "600"),
+        ("StoreType", "01"),
+        ("Status", "01"),
+        ("StoreID", "991182"),
+    ]);
+    let mut b = a.clone();
+    b[5].1 = "04".to_string(); // Status：門市臨時關轉店
+    let temporary = Some("取件門市異動：門市臨時關轉店（991182）");
+
+    let (status, text) = ecpay_post(&app, "/api/ecpay/logistics/store-update", a.clone()).await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+    assert_eq!(store_updates_len(&pool, id).await, 1);
+
+    let (status, text) = ecpay_post(&app, "/api/ecpay/logistics/store-update", a.clone()).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::OK, "1|OK"),
+        "重播仍回 1|OK"
+    );
+    assert_eq!(store_updates_len(&pool, id).await, 1, "重播不追加");
+
+    ecpay_post(&app, "/api/ecpay/logistics/store-update", b).await;
+    assert_eq!(store_updates_len(&pool, id).await, 2);
+    assert_eq!(snapshot(&pool, id).await.3.as_deref(), temporary);
+
+    ecpay_post(&app, "/api/ecpay/logistics/store-update", a).await;
+    assert_eq!(store_updates_len(&pool, id).await, 2, "舊的重播還是不追加");
+    assert_eq!(
+        snapshot(&pool, id).await.3.as_deref(),
+        temporary,
+        "訊息不退回舊的"
     );
 }

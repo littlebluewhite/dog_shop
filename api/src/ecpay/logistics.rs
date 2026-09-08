@@ -164,6 +164,34 @@ pub fn create_url(cfg: &EcpayConfig) -> String {
     format!("{}/Express/Create", cfg.logistics_base_url())
 }
 
+/// 綠界文件的 email 格式比 RFC 保守（結帳放行的 `'` 等字元建單會被拒）。ReceiverEmail 是選填，
+/// 不符就不送，免得整張單建不起來：全 ASCII、長度 ≤ 50、恰一個 @、local 只有 `A-Za-z0-9._%+-`、
+/// domain 只有 `A-Za-z0-9.-` 且含點、不以點開頭或結尾
+fn is_ecpay_safe_email(s: &str) -> bool {
+    if !s.is_ascii() || s.chars().count() > RECEIVER_EMAIL_MAX {
+        return false;
+    }
+    let Some((local, domain)) = s.split_once('@') else {
+        return false;
+    };
+    if local.is_empty() || domain.contains('@') {
+        return false;
+    }
+    if !local
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._%+-".contains(c))
+    {
+        return false;
+    }
+    if !domain
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return false;
+    }
+    domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+}
+
 /// 組出 POST /Express/Create 的欄位（規格 §8.3 的清單，含 MD5 CheckMacValue）。
 /// `now` 由呼叫者傳入，測試才能固定。幕後建單不帶 ClientReplyURL
 pub fn create_fields(
@@ -192,7 +220,7 @@ pub fn create_fields(
     put("SenderCellPhone", req.sender_phone.clone());
     put("ReceiverName", req.receiver_name.clone());
     put("ReceiverCellPhone", req.receiver_phone.clone());
-    if !req.receiver_email.is_empty() && req.receiver_email.chars().count() <= RECEIVER_EMAIL_MAX {
+    if is_ecpay_safe_email(&req.receiver_email) {
         put("ReceiverEmail", req.receiver_email.clone());
     }
     put("ReceiverStoreID", req.receiver_store_id.clone());
@@ -502,7 +530,8 @@ impl EcpayLogisticsClient {
         let body = form_urlencoded::Serializer::new(String::new())
             .extend_pairs(fields.iter())
             .finish();
-        self.client
+        let response = self
+            .client
             .post(url)
             .header(
                 reqwest::header::CONTENT_TYPE,
@@ -511,12 +540,14 @@ impl EcpayLogisticsClient {
             .body(body)
             .send()
             .await
-            .context("連線綠界物流 API")?
-            .error_for_status()
-            .context("綠界物流 API HTTP 錯誤")?
-            .text()
-            .await
-            .context("讀取綠界物流回應")
+            .context("連線綠界物流 API")?;
+        // 非 2xx 時綠界的回應內容也要留著（可能是 WAF 擋掉、也可能真的掛了）
+        let status = response.status();
+        let text = response.text().await.context("讀取綠界物流回應")?;
+        if !status.is_success() {
+            anyhow::bail!("綠界物流 API HTTP {status}：{}", truncate_chars(&text, 500));
+        }
+        Ok(text)
     }
 }
 
@@ -832,6 +863,44 @@ mod tests {
         );
     }
 
+    /// 綠界文件的 email 格式比 RFC 保守：不符就不送（ReceiverEmail 是選填），
+    /// 免得已付款訂單每次建單都被拒
+    #[test]
+    fn receiver_email_only_sent_when_ecpay_safe() {
+        let cfg = cfg();
+        let now = Utc.with_ymd_and_hms(2026, 9, 8, 4, 5, 6).unwrap();
+        let email_field = |email: &str| {
+            let mut req = request();
+            req.receiver_email = email.to_string();
+            create_fields(&cfg.ecpay, "https://shop.example", &req, now)
+                .get("ReceiverEmail")
+                .cloned()
+        };
+        assert_eq!(
+            email_field("wilson.chen+dog@example.com").as_deref(),
+            Some("wilson.chen+dog@example.com")
+        );
+        assert_eq!(
+            email_field("o'brien@example.com"),
+            None,
+            "RFC 允許但綠界不收"
+        );
+        assert_eq!(email_field("日本@example.com"), None, "非 ASCII 不送");
+        assert_eq!(email_field(""), None);
+
+        assert!(is_ecpay_safe_email("buyer@test.local"));
+        assert!(!is_ecpay_safe_email("a@b@c.com"), "兩個 @");
+        assert!(!is_ecpay_safe_email("nobody"), "沒有 @");
+        assert!(!is_ecpay_safe_email("@example.com"), "沒有 local part");
+        assert!(!is_ecpay_safe_email("a@example"), "domain 沒有點");
+        assert!(!is_ecpay_safe_email("a@.example.com"), "domain 以點開頭");
+        assert!(!is_ecpay_safe_email("a@example.com."), "domain 以點結尾");
+        assert!(
+            !is_ecpay_safe_email(&("a".repeat(46) + "@x.tw")),
+            "51 字超過上限"
+        );
+    }
+
     #[test]
     fn parse_create_response_success_rejected_bad_mac_malformed() {
         let cfg = cfg();
@@ -1034,5 +1103,31 @@ mod tests {
             "寄件人寬度上限 10"
         );
         assert!(is_sub_type("FAMIC2C") && !is_sub_type("TCAT"));
+    }
+
+    /// 綠界回 4xx/5xx 時，回應內容不能被丟掉（老闆要看得出是被擋還是真的掛了）。
+    /// 伺服器只綁 127.0.0.1，不打綠界
+    #[tokio::test]
+    async fn post_form_keeps_the_body_of_an_http_error() {
+        // reqwest 的 rustls-no-provider：建 Client 前要有 provider（main.rs 開機時做同一件事）
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let app = axum::Router::new().route(
+            "/Express/Create",
+            axum::routing::post(|| async {
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom")
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let err = EcpayLogisticsClient::new()
+            .unwrap()
+            .post_form(&format!("http://{addr}/Express/Create"), &BTreeMap::new())
+            .await
+            .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("500"), "{text}");
+        assert!(text.contains("boom"), "{text}");
     }
 }

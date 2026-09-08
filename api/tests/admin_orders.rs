@@ -2,8 +2,8 @@ mod common;
 
 use axum::{Router, http::StatusCode};
 use dog_shop_api::{
-    domain::{invoices, settings},
-    ecpay::mac,
+    domain::{invoices, settings, shipments},
+    ecpay::{logistics::CreateOk, mac},
     jobs::worker,
     state::AppState,
 };
@@ -686,6 +686,68 @@ async fn ship_cvs_finishes_interrupted_transition_without_calling_ecpay_again(po
         1,
         "不再打綠界"
     );
+}
+
+/// C2：認領被下一次嘗試接手（L01 → L02）之後，L01 那次遲到的結果不能寫進去 ——
+/// 不然會清掉 L02 的 'creating' 標記、或把 L02 的單號蓋成 L01 的
+#[sqlx::test(migrations = "./migrations")]
+async fn stale_attempt_cannot_overwrite_a_reclaimed_shipment(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let (id, order_no, _) = place_order(&app, &pool, "cvs").await;
+    mark_paid(&pool, id).await;
+    // 現在是 L02 在建單
+    sqlx::query(
+        "UPDATE shipments SET ecpay_merchant_trade_no = $2, last_status_code = 'creating'
+         WHERE order_id = $1",
+    )
+    .bind(id)
+    .bind(format!("{order_no}L02"))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let ok = CreateOk {
+        logistics_id: "10099".to_string(),
+        rtn_code: 300,
+        rtn_msg: "訂單處理中(已收到訂單資料)".to_string(),
+        cvs_payment_no: "F0001234".to_string(),
+        cvs_validation_no: "1234".to_string(),
+        raw: json!({}),
+    };
+    let stale = format!("{order_no}L01");
+
+    assert!(
+        !shipments::record_create_ok(&pool, id, &stale, &ok)
+            .await
+            .unwrap(),
+        "L01 的成功結果不能寫到 L02 的列"
+    );
+    let (_, _, _, mtn, lid, code, msg) = ship_snapshot(&pool, id).await;
+    assert_eq!(mtn.as_deref(), Some(format!("{order_no}L02").as_str()));
+    assert!(lid.is_none(), "單號沒被蓋掉");
+    assert_eq!(code.as_deref(), Some("creating"), "L02 的認領標記還在");
+    assert!(msg.is_none());
+
+    assert!(
+        !shipments::record_create_failure(&pool, id, &stale, shipments::CREATE_FAILED, "x", None)
+            .await
+            .unwrap(),
+        "L01 的失敗結果也不能寫進去"
+    );
+    let (_, _, _, _, lid, code, msg) = ship_snapshot(&pool, id).await;
+    assert!(lid.is_none());
+    assert_eq!(code.as_deref(), Some("creating"));
+    assert!(msg.is_none());
+
+    // 認領中的那次寫得進去
+    assert!(
+        shipments::record_create_ok(&pool, id, &format!("{order_no}L02"), &ok)
+            .await
+            .unwrap()
+    );
+    let (_, _, _, _, lid, code, _) = ship_snapshot(&pool, id).await;
+    assert_eq!(lid.as_deref(), Some("10099"));
+    assert_eq!(code.as_deref(), Some("300"));
 }
 
 /// 認領守衛（審查擱置 27）：別人正在建單（last_status_code='creating' 且未超過 2 分鐘）時擋下來；
