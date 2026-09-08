@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::domain::jobs;
-use crate::domain::orders::{STATUS_PAID, STATUS_PENDING_PAYMENT};
+use crate::domain::orders::{PaymentRow, STATUS_PAID, STATUS_PENDING_PAYMENT};
 use crate::ecpay::aio::Notification;
 use crate::error::ApiError;
 
@@ -29,6 +29,23 @@ pub struct Payment {
     pub atm_vaccount: Option<String>,
     pub cvs_payment_no: Option<String>,
     pub expire_at: Option<DateTime<Utc>>,
+}
+
+/// 剛建立的付款嘗試要拿去組綠界表單（routes::orders::repay）
+impl From<Payment> for PaymentRow {
+    fn from(p: Payment) -> Self {
+        Self {
+            id: p.id,
+            merchant_trade_no: p.merchant_trade_no,
+            method: p.method,
+            status: p.status,
+            amount: p.amount,
+            atm_bank_code: p.atm_bank_code,
+            atm_vaccount: p.atm_vaccount,
+            cvs_payment_no: p.cvs_payment_no,
+            expire_at: p.expire_at,
+        }
+    }
 }
 
 const PAYMENT_COLUMNS: &str =

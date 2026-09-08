@@ -110,6 +110,86 @@ async fn repay_creates_new_payment_and_form(pool: PgPool) {
     assert_eq!(payment_count(&pool, &id).await, 3);
 }
 
+/// 兩個並發的重新付款（例如雙擊）：各自的表單要對應自己新建的那一筆，不能重新載入
+/// 「最新一筆」而拿到對方的 MerchantTradeNo 與付款方式（規格 §7：每次重新付款是獨立的一筆）
+#[sqlx::test(migrations = "./migrations")]
+async fn concurrent_repays_get_distinct_attempts(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let (id, order_no, token) = place_order(&app, &pool, None).await;
+    let url = format!("/api/orders/{id}/repay?t={token}");
+
+    let ((status_a, body_a, _), (status_b, body_b, _)) = tokio::join!(
+        common::send(
+            &app,
+            common::req(
+                "POST",
+                &url,
+                None,
+                Some(json!({ "payment_method": "credit" }))
+            )
+        ),
+        common::send(
+            &app,
+            common::req("POST", &url, None, Some(json!({ "payment_method": "atm" })))
+        ),
+    );
+    assert_eq!(status_a, StatusCode::OK, "{body_a}");
+    assert_eq!(status_b, StatusCode::OK, "{body_b}");
+    assert_eq!(body_a["ecpay"]["fields"]["ChoosePayment"], "Credit");
+    assert_eq!(body_b["ecpay"]["fields"]["ChoosePayment"], "ATM");
+    let mut trade_nos = [&body_a, &body_b].map(|b| {
+        b["ecpay"]["fields"]["MerchantTradeNo"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    });
+    trade_nos.sort();
+    assert_eq!(
+        trade_nos,
+        [format!("{order_no}02"), format!("{order_no}03")],
+        "兩張表單不能是同一個 MerchantTradeNo"
+    );
+    assert_eq!(payment_count(&pool, &id).await, 3);
+}
+
+/// 上一個測試的交錯在單執行緒的測試 runtime 裡不一定會發生，這裡把「另一筆重新付款已經搶先
+/// 寫入、而且排序上是最新一筆」的狀態直接造出來：表單必須用這次自己建的那一筆，不是最新一筆
+#[sqlx::test(migrations = "./migrations")]
+async fn repay_form_uses_the_attempt_it_just_created_not_the_latest_row(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let (id, order_no, token) = place_order(&app, &pool, None).await;
+    // 另一個並發的重新付款剛建立的那一筆（created_at 比等一下要建的還新）
+    sqlx::query(
+        "INSERT INTO payments (id, order_id, merchant_trade_no, method, amount, created_at)
+         VALUES ($1, $2, $3, 'cvs_code', 700, now() + interval '1 minute')",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(uuid(&id))
+    .bind(format!("{order_no}99"))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            &format!("/api/orders/{id}/repay?t={token}"),
+            None,
+            Some(json!({ "payment_method": "credit" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let fields = &body["ecpay"]["fields"];
+    assert_eq!(
+        fields["MerchantTradeNo"],
+        format!("{order_no}03"),
+        "表單要對應這次建立的那一筆，不是別人的"
+    );
+    assert_eq!(fields["ChoosePayment"], "Credit", "付款方式也要是自己送的");
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn repay_rejects_non_pending_and_disabled_method(pool: PgPool) {
     let app = common::app(pool.clone());

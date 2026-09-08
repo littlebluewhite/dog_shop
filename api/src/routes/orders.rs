@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::{
     auth::extract::CurrentUser,
     domain::{
-        orders::{self, OrderCreated, OrderDetail, OrderInput, Viewer},
+        orders::{self, OrderCreated, OrderDetail, OrderInput, PaymentRow, Viewer},
         payments, settings,
         users::User,
     },
@@ -70,7 +70,7 @@ pub struct CreateOrderResponse {
     pub ecpay: Option<CheckoutForm>,
 }
 
-/// 讀完整訂單與最新一筆付款，組綠界表單。create 與 repay（Task 7）共用。
+/// 讀完整訂單與最新一筆付款，組綠界表單（下單用）。
 /// guest_token 有值時 ClientBackURL 帶 ?t=（訪客回到訂單頁要靠它）
 async fn checkout_form_for(
     state: &AppState,
@@ -84,12 +84,23 @@ async fn checkout_form_for(
         .payment
         .as_ref()
         .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("訂單 {order_id} 沒有 payments 列")))?;
+    checkout_form_for_payment(state, &detail, payment, guest_token).await
+}
+
+/// 指定哪一筆付款嘗試組表單。重新付款要用剛建立的那一筆：重新載入「最新一筆」的話，兩個並發的
+/// 重新付款會互相拿到對方的 MerchantTradeNo 與付款方式（規格 §7：每次重新付款是獨立的一筆）
+async fn checkout_form_for_payment(
+    state: &AppState,
+    detail: &OrderDetail,
+    payment: &PaymentRow,
+    guest_token: Option<&str>,
+) -> ApiResult<CheckoutForm> {
     let shop = settings::get_all(&state.db).await?.shop;
     aio::checkout_form(
         &state.config.ecpay,
         &state.config.public_base_url,
         &shop.name,
-        &detail,
+        detail,
         payment,
         guest_token,
         Utc::now(),
@@ -221,11 +232,12 @@ async fn repay(
             "這個付款方式目前沒有開放",
         ));
     }
-    payments::create_repayment(&state.db, id, &method).await?;
+    let payment = payments::create_repayment(&state.db, id, &method).await?;
     let guest_token = match &viewer {
         Viewer::Guest(token) => Some(token.as_str()),
         Viewer::User(_) => None,
     };
-    let ecpay = checkout_form_for(&state, id, guest_token).await?;
+    let ecpay =
+        checkout_form_for_payment(&state, &detail, &PaymentRow::from(payment), guest_token).await?;
     Ok(Json(RepayResponse { ecpay }))
 }
