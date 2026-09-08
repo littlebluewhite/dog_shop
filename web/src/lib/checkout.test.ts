@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultForm, toOrderInput, validateForm, type CheckoutForm } from './checkout';
+import { defaultForm, isMobileDevice, storeErrorMessage, toOrderInput, validateForm, type CheckoutForm } from './checkout';
 
 function homeForm(): CheckoutForm {
 	const f = defaultForm(null, 'credit');
@@ -63,5 +63,23 @@ describe('checkout form', () => {
 		f.invoice = { type: 'donation', carrier_type: '1', carrier_num: '', tax_id: '', title: '', address: '', love_code: '123' };
 		const body = toOrderInput(f, [{ variant_id: 'v1', qty: 1 }], null);
 		expect(body.invoice).toEqual({ type: 'donation', love_code: '123' });
+	});
+});
+
+describe('isMobileDevice', () => {
+	it('手機 UA 回 true、桌機回 false', () => {
+		expect(isMobileDevice('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148')).toBe(true);
+		expect(isMobileDevice('Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Mobile Safari/537.36')).toBe(true);
+		expect(isMobileDevice('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 Safari/605.1.15')).toBe(false);
+	});
+});
+
+describe('storeErrorMessage', () => {
+	it('已知原因有專屬文案、未知原因有通用文案、沒有原因回 null', () => {
+		expect(storeErrorMessage('expired')).toContain('逾時');
+		expect(storeErrorMessage('invalid')).toContain('不完整');
+		expect(storeErrorMessage('server')).toContain('稍後');
+		expect(storeErrorMessage('weird')).toBe('門市選擇失敗，請重新選擇門市');
+		expect(storeErrorMessage(null)).toBeNull();
 	});
 });

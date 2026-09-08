@@ -4,6 +4,8 @@ pub mod auth;
 pub mod cart;
 pub mod categories;
 pub mod checkout;
+pub mod ecpay_callback;
+pub mod ecpay_logistics;
 pub mod ecpay_payment;
 pub mod health;
 pub mod me;

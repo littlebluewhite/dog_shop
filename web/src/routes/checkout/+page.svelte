@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { api, ApiError } from '$lib/api';
 	import { cart } from '$lib/cart.svelte';
-	import { CHECKOUT_STORAGE_KEY, defaultForm, toOrderInput, validateForm, type CheckoutForm } from '$lib/checkout';
+	import { CHECKOUT_STORAGE_KEY, defaultForm, isMobileDevice, storeErrorMessage, toOrderInput, validateForm, type CheckoutForm } from '$lib/checkout';
 	import AddressFields from '$lib/components/AddressFields.svelte';
 	import InvoiceFields from '$lib/components/checkout/InvoiceFields.svelte';
 	import { postToEcpay } from '$lib/ecpay';
@@ -30,6 +30,7 @@
 	let errors = $state<Record<string, string>>({});
 	let submitting = $state(false);
 	let selectedAddressId = $state('');
+	let pickingStore = $state(false);
 
 	const lines = $derived(checked?.items.filter((i) => i.available) ?? []);
 	const subtotal = $derived(checked?.subtotal ?? cart.subtotal);
@@ -85,6 +86,11 @@
 			form.cvs_sub_type = store.sub_type;
 		}
 		if (!enabledPayments.includes(form.payment_method)) form.payment_method = enabledPayments[0] ?? 'credit';
+		const storeError = storeErrorMessage(data.storeError);
+		if (storeError) {
+			form.shipping_method = 'cvs';
+			toast.show(storeError, 5000);
+		}
 	});
 
 	// 購物車載入後核對一次；表單每次變動就存草稿（計畫 4 去綠界地圖前後要用）
@@ -110,6 +116,27 @@
 		form.recipient_name = a.recipient_name;
 		form.recipient_phone = a.phone;
 		form.address = { postal_code: a.postal_code, city: a.city, district: a.district, street: a.street };
+	}
+
+	/** 去綠界電子地圖選門市（規格 §7 第 2 點）：草稿已由上面的 $effect 存進 sessionStorage；頂層導頁離開本頁 */
+	async function pickStore() {
+		if (pickingStore) return;
+		pickingStore = true;
+		try {
+			const mapForm = await api<EcpayForm>('/api/checkout/cvs-map', {
+				method: 'POST',
+				body: JSON.stringify({ sub_type: form.cvs_sub_type, device: isMobileDevice(navigator.userAgent) ? 1 : 0 })
+			});
+			postToEcpay(mapForm);
+		} catch (err) {
+			toast.show(err instanceof ApiError ? err.message : '無法開啟門市地圖，請再試一次');
+			pickingStore = false;
+		}
+	}
+
+	/** 換了超商就把上次選的門市清掉（門市屬於某一家超商） */
+	function onSubTypeChange() {
+		if (store && store.sub_type !== form.cvs_sub_type) store = null;
 	}
 
 	async function submit(e: SubmitEvent) {
@@ -239,7 +266,7 @@
 				{:else}
 					<div class="flex flex-wrap gap-4 text-sm">
 						{#each cvsTypes as t (t)}
-							<label class="flex items-center gap-2"><input type="radio" bind:group={form.cvs_sub_type} value={t} /> {CVS_LABELS[t]}</label>
+							<label class="flex items-center gap-2"><input type="radio" bind:group={form.cvs_sub_type} value={t} onchange={onSubTypeChange} /> {CVS_LABELS[t]}</label>
 						{/each}
 					</div>
 					{#if store}
@@ -248,8 +275,8 @@
 							<div class="text-gray-600">{store.store_address}</div>
 						</div>
 					{/if}
-					<button type="button" disabled class="rounded border border-gray-300 px-3 py-2 text-sm disabled:opacity-50" title="綠界電子地圖在下一個階段接上">
-						選擇門市（門市選擇功能準備中）
+					<button type="button" onclick={pickStore} disabled={pickingStore} class="rounded border border-gray-300 px-3 py-2 text-sm disabled:opacity-50">
+						{pickingStore ? '前往綠界地圖…' : store ? '重新選擇門市' : '選擇門市'}
 					</button>
 					{#if errors.cvs_store}<p class="text-sm text-red-600">{errors.cvs_store}</p>{/if}
 					<p class="text-xs text-gray-500">超商取貨收件人請填 2～5 個中文字的本名，取貨時要核對證件。</p>

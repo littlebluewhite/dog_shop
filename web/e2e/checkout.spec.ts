@@ -95,3 +95,80 @@ test('瀏覽 → 加入購物車 → 結帳（宅配）→ 送往綠界的表單
 	await page.getByRole('button', { name: '確定取消這筆訂單' }).click();
 	await expect(page.getByText('已取消', { exact: false }).first()).toBeVisible();
 });
+
+test('超商取貨：選擇門市 → 綠界地圖表單 → 門市回傳 → 結帳頁顯示門市 → 送出訂單', async ({ page, request }) => {
+	const product = await seedProduct(request);
+
+	await page.goto(`/products/${product.slug}`);
+	await expect(async () => {
+		await page.getByRole('button', { name: '加入購物車' }).click();
+		await expect(page.getByText('已加入購物車')).toBeVisible({ timeout: 2_000 });
+	}).toPass({ timeout: 15_000 });
+
+	await page.goto('/checkout');
+	await page.getByLabel(/^Email/).fill('e2e-cvs@test.local');
+	await page.getByLabel('收件人').fill('王小明');
+	await page.getByLabel('手機', { exact: true }).fill('0912345678');
+	await page.getByRole('radio', { name: /超商取貨/ }).check();
+	await page.getByRole('radio', { name: '全家' }).check();
+
+	// 攔截送往綠界電子地圖的頂層表單 POST（規格 §8.3：測試環境本來就不顯示地圖）
+	await page.route('https://logistics-stage.ecpay.com.tw/**', (route) =>
+		route.fulfill({
+			status: 200,
+			contentType: 'text/html; charset=utf-8',
+			body: '<!doctype html><title>ECPay map stub</title><p>ECPay map stub</p>'
+		})
+	);
+	const mapRequest = page.waitForRequest((r) => r.url().includes('/Express/map') && r.method() === 'POST');
+	await page.getByRole('button', { name: '選擇門市', exact: true }).click();
+	const mapFields = new URLSearchParams((await mapRequest).postData() ?? '');
+	expect(mapFields.get('MerchantID')).toBe('2000933');
+	expect(mapFields.get('LogisticsType')).toBe('CVS');
+	expect(mapFields.get('LogisticsSubType')).toBe('FAMIC2C');
+	expect(mapFields.get('IsCollection')).toBe('N');
+	expect(mapFields.get('ServerReplyURL')).toMatch(/\/api\/ecpay\/logistics\/map-reply$/);
+	expect(mapFields.has('CheckMacValue')).toBe(false);
+	const token = mapFields.get('ExtraData') ?? '';
+	expect(token).toMatch(/^[A-Za-z0-9]{20}$/);
+	expect(mapFields.get('MerchantTradeNo')).toBe(token);
+	await expect(page.getByText('ECPay map stub')).toBeVisible();
+
+	// 模擬綠界把門市 POST 回 map-reply（form-urlencoded、沒有我們的 CSRF header）；303 不要自動跟
+	const reply = await request.post(`${API}/api/ecpay/logistics/map-reply`, {
+		maxRedirects: 0,
+		form: {
+			MerchantID: '2000933',
+			MerchantTradeNo: token,
+			LogisticsSubType: 'FAMIC2C',
+			CVSStoreID: '006598',
+			CVSStoreName: '全家測試店',
+			CVSAddress: '台北市中正區重慶南路一段 122 號',
+			CVSTelephone: '0223456789',
+			CVSOutSide: '0',
+			ExtraData: token
+		}
+	});
+	expect(reply.status()).toBe(303);
+	const location = reply.headers()['location'] ?? '';
+	expect(location).toMatch(new RegExp(`/checkout\\?store=${token}$`));
+
+	// 回到結帳頁：門市顯示出來、sessionStorage 的草稿還原（同一個分頁、同一個 origin）
+	await page.goto(location);
+	await expect(page.getByText('全家測試店')).toBeVisible();
+	await expect(page.getByLabel(/^Email/)).toHaveValue('e2e-cvs@test.local');
+	await expect(page.getByRole('radio', { name: '全家' })).toBeChecked();
+	await expect(page.getByText('總計')).toBeVisible();
+
+	// 送出訂單 → 攔到送往綠界金流的表單；訂單頁顯示門市
+	await page.route('https://payment-stage.ecpay.com.tw/**', (route) =>
+		route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: '<!doctype html><title>ECPay stub</title><p>ECPay stub</p>' })
+	);
+	const aioRequest = page.waitForRequest((r) => r.url().includes('/Cashier/AioCheckOut/V5') && r.method() === 'POST');
+	await page.getByRole('button', { name: '送出訂單' }).click();
+	const aio = new URLSearchParams((await aioRequest).postData() ?? '');
+	expect(aio.get('MerchantTradeNo')).toMatch(/^DS\d{6}[A-Z0-9]{4}01$/);
+	await page.goto(aio.get('ClientBackURL') ?? '');
+	await expect(page.getByText('全家測試店')).toBeVisible();
+	await expect(page.getByText('待付款')).toBeVisible();
+});

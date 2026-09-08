@@ -14,5 +14,5 @@ export const load: PageServerLoad = async (event) => {
 			if (!(e instanceof ApiError && e.status === 404)) throw e;
 		}
 	}
-	return { addresses, store, title: '結帳' };
+	return { addresses, store, storeError: event.url.searchParams.get('store_error'), title: '結帳' };
 };

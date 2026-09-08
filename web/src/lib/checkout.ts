@@ -132,3 +132,20 @@ export function toOrderInput(
 		note: form.note.trim()
 	};
 }
+
+/** 綠界地圖的 Device：手機 1、桌機 0（規格 §8.3） */
+export function isMobileDevice(userAgent: string): boolean {
+	return /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent);
+}
+
+/** map-reply 失敗時 303 回 /checkout?store_error=… 的文案（與規格不同之處 37） */
+export const STORE_ERROR_MESSAGES: Record<string, string> = {
+	expired: '門市選擇已逾時（超過 1 小時），請重新選擇門市',
+	invalid: '綠界回傳的門市資料不完整，請重新選擇門市',
+	server: '暫時無法儲存門市，請稍後再試'
+};
+
+export function storeErrorMessage(code: string | null): string | null {
+	if (!code) return null;
+	return STORE_ERROR_MESSAGES[code] ?? '門市選擇失敗，請重新選擇門市';
+}

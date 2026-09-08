@@ -123,7 +123,7 @@ pub async fn auto_complete_shipped(db: &PgPool) -> anyhow::Result<usize> {
     Ok(n as usize)
 }
 
-/// 每天清理：過期 session、過期或用過的重設 token、過期門市選擇、30 天前做完的 job
+/// 每天清理：過期 session、過期或用過的重設 token、過期門市選擇與門市登記、30 天前做完的 job
 pub async fn purge_expired(db: &PgPool) -> anyhow::Result<usize> {
     let mut n = 0u64;
     n += sqlx::query("DELETE FROM sessions WHERE expires_at <= now()")
@@ -136,6 +136,10 @@ pub async fn purge_expired(db: &PgPool) -> anyhow::Result<usize> {
             .await?
             .rows_affected();
     n += sqlx::query("DELETE FROM cvs_store_selections WHERE expires_at <= now()")
+        .execute(db)
+        .await?
+        .rows_affected();
+    n += sqlx::query("DELETE FROM cvs_map_requests WHERE expires_at <= now()")
         .execute(db)
         .await?
         .rows_affected();

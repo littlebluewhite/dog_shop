@@ -5,19 +5,16 @@ use axum::{
     Router,
     extract::{DefaultBodyLimit, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::Response,
     routing::post,
 };
 
 use crate::{
     domain::payments::{self, InfoOutcome, ReturnOutcome},
     ecpay::aio::{self, CallbackError},
-    error::ApiError,
+    routes::ecpay_callback::{MAX_CALLBACK_FIELDS, callback_error, parse_form, server_error, text},
     state::AppState,
 };
-
-/// 綠界回呼的欄位筆數上限：`ReturnURL` 最多 30 幾個欄位，100 很寬鬆（修正波 #1）
-const MAX_CALLBACK_FIELDS: usize = 100;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -25,30 +22,6 @@ pub fn router() -> Router<AppState> {
         .route("/api/ecpay/payment/info", post(payment_info))
         // 回呼一律 < 2 KB；後掛的 layer 在內層，覆蓋 app.rs 給圖片上傳訂的 10 MB（修正波 #1）
         .layer(DefaultBodyLimit::max(64 * 1024))
-}
-
-/// 綠界送 application/x-www-form-urlencoded；不用 axum::Form，因為要拿到所有欄位重算簽章
-fn parse_form(body: &str) -> Vec<(String, String)> {
-    form_urlencoded::parse(body.as_bytes())
-        .into_owned()
-        .collect()
-}
-
-fn text(status: StatusCode, body: &'static str) -> Response {
-    (status, body).into_response()
-}
-
-fn callback_error(path: &'static str, err: CallbackError) -> Response {
-    tracing::warn!(path, error = %err, "綠界回呼簽章或欄位錯誤");
-    match err {
-        CallbackError::BadMac => text(StatusCode::BAD_REQUEST, "0|CheckMacValue Error"),
-        CallbackError::Missing(_) => text(StatusCode::BAD_REQUEST, "0|Missing Field"),
-    }
-}
-
-fn server_error(path: &'static str, err: ApiError) -> Response {
-    tracing::error!(path, error = %err, "綠界回呼處理失敗，回 500 讓綠界重送");
-    text(StatusCode::INTERNAL_SERVER_ERROR, "0|Server Error")
 }
 
 /// 付款結果
