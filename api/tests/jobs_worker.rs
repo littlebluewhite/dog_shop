@@ -1,6 +1,7 @@
 mod common;
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{DateTime, Duration, Utc};
 use dog_shop_api::domain::orders::{HomeAddress, InvoiceInput, OrderInput, OrderItemInput};
@@ -210,6 +211,36 @@ async fn panicking_handler_is_treated_as_failure_and_does_not_kill_the_batch(poo
         "同批的健康 job 照樣做完"
     );
     assert_eq!(payload, json!({}));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn stuck_handler_is_aborted_and_counted_as_failed_attempt(pool: PgPool) {
+    let id = enqueue(&pool, "test", json!({})).await;
+    let started = Instant::now();
+    // 整個測試體包一層 10 秒：修正前卡住的 handler 沒有期限，這裡會是「卡住」而不是明確失敗
+    let n = tokio::time::timeout(
+        StdDuration::from_secs(10),
+        worker::run_once_with_timeout(&pool, StdDuration::from_millis(200), |_job| async {
+            std::future::pending::<()>().await;
+            Ok(())
+        }),
+    )
+    .await
+    .expect("run_once 沒有在 10 秒內回來：卡住的 job 會堵死後面所有 job")
+    .unwrap();
+    assert_eq!(n, 1);
+    assert!(
+        started.elapsed() < StdDuration::from_secs(5),
+        "應該在 timeout 後就中止，實際花了 {:?}",
+        started.elapsed()
+    );
+    let (status, attempts, err, _, _) = job_row(&pool, id).await;
+    assert_eq!(
+        (status.as_str(), attempts),
+        ("queued", 1),
+        "跟 Err 一樣走退避，不是卡在 running"
+    );
+    assert!(err.unwrap().contains("逾時"), "last_error 要說是逾時");
 }
 
 // ───── 排程工作 ─────

@@ -1,6 +1,6 @@
 //! 認領 → 執行 → 標記。認領用一句 UPDATE … FROM (SELECT … FOR UPDATE SKIP LOCKED LIMIT 10)，
 //! 多個 worker 行程也不會搶到同一筆；當機留下的 running 由 requeue_stale 撿回來（與規格不同之處 27）
-use std::future::Future;
+use std::{future::Future, time::Duration};
 
 use serde_json::Value;
 use sqlx::PgPool;
@@ -16,6 +16,8 @@ pub const BATCH: i64 = 10;
 pub const STALE_RUNNING_MINUTES: i32 = 10;
 /// 退避上限：2^attempts 分鐘，最多 2^10（max_attempts 預設 5，實際到不了）
 const MAX_BACKOFF_EXP: i32 = 10;
+/// 單一 job 的執行期限：卡住的 handler（例如不回應的 SMTP）不能堵死後面所有 job（codex P1-1）
+pub const JOB_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Job {
@@ -96,8 +98,23 @@ async fn mark_failed_attempt(db: &PgPool, job: &Job, error: &str) -> Result<(), 
 /// 跑一輪：認領、逐筆執行、標記。回處理的筆數。handler 可注入（測試用假的）。
 /// 用 tokio::spawn 包住每次呼叫：handler 裡的 panic 不會拖垮整個 worker 迴圈（否則會一路 unwind
 /// 到 mod.rs 的 tokio::spawn，那個 task 就悄悄死掉、不會重啟），而是跟 Err 一樣走
-/// mark_failed_attempt，讓 max_attempts 照樣生效（Task 8 review）
+/// mark_failed_attempt，讓 max_attempts 照樣生效（Task 8 review）。每筆最多跑 JOB_TIMEOUT
 pub async fn run_once_with<F, Fut>(db: &PgPool, handler: F) -> anyhow::Result<usize>
+where
+    F: Fn(Job) -> Fut,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    run_once_with_timeout(db, JOB_TIMEOUT, handler).await
+}
+
+/// 同 run_once_with，但每筆 job 最多跑 `timeout`；超過就 abort 那個 task 並當成失敗
+/// （走 mark_failed_attempt，max_attempts 照樣生效）。卡住的 handler 只會拖慢自己這一筆，
+/// 不會讓整個 worker 迴圈停住（requeue_stale 救不了卡住的 future）
+pub async fn run_once_with_timeout<F, Fut>(
+    db: &PgPool,
+    timeout: Duration,
+    handler: F,
+) -> anyhow::Result<usize>
 where
     F: Fn(Job) -> Fut,
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
@@ -105,15 +122,23 @@ where
     let jobs = claim(db, BATCH).await?;
     let n = jobs.len();
     for job in jobs {
-        let outcome = match tokio::spawn(handler(job.clone())).await {
-            Ok(result) => result,
-            Err(join_err) => {
+        let mut handle = tokio::spawn(handler(job.clone()));
+        let outcome = match tokio::time::timeout(timeout, &mut handle).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(join_err)) => {
                 let msg = if join_err.is_panic() {
                     "handler panicked".to_string()
                 } else {
                     format!("job task 未完成：{join_err}")
                 };
                 Err(anyhow::anyhow!(msg))
+            }
+            Err(_elapsed) => {
+                handle.abort();
+                Err(anyhow::anyhow!(
+                    "job 逾時（{} 秒），已中止",
+                    timeout.as_secs_f64()
+                ))
             }
         };
         match outcome {
