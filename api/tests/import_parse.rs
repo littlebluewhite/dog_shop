@@ -68,7 +68,7 @@ fn formatted_empty_tail_rows_do_not_count() {
 }
 
 /// 宣告的工作表範圍超過格數預算就要直接拒絕，不能讓 calamine 去配置整個稠密矩陣。
-/// 這裡用「略超預算」的形狀（25_001 × 101 ≈ 2.5M 格）：舊碼只配約 80 MB，回 TooManyRows，
+/// 這裡用「略超預算」的形狀（25_001 × 101 ≈ 2.5M 格）：舊碼只配約 80 MB、把那一格當空白濾掉後回 Ok，
 /// 所以斷言乾淨地紅。真正極端的遠格檔（XFD1048576）只在新碼上測，見下一個測試。
 #[test]
 fn a_sheet_range_over_the_cell_budget_is_rejected() {
