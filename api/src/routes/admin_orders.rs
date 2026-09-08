@@ -15,7 +15,9 @@ use crate::{
     domain::{
         admin_orders::{self, AdminOrderDetail, AdminOrderListItem, Flag},
         invoices, jobs,
-        orders::{self, SHIPPING_CVS, SHIPPING_HOME, STATUS_PAID},
+        orders::{
+            self, SHIPPING_CVS, SHIPPING_HOME, STATUS_COMPLETED, STATUS_PAID, STATUS_SHIPPED,
+        },
         products::{self, Page},
         settings,
         shipments::{self, CREATE_ERROR, CREATE_FAILED, SHIPMENT_PENDING},
@@ -357,13 +359,26 @@ async fn mark_refunded(
     admin_detail(&state, id).await
 }
 
-/// 重開發票（規格 §8.4、與規格不同之處 44）：failed → pending，排新的 issue_invoice job
+/// 重開發票（規格 §8.4、與規格不同之處 44）：failed → pending，排新的 issue_invoice job。
+/// 訂單要先確認在 paid／shipped／completed：issue_invoice job（jobs/handlers.rs）遇到其他狀態只會
+/// 靜默略過（不記失敗），reset 成 pending 之後就沒有路能再變回 failed，卡死（Task 7 審查 Important 1）
 async fn retry_invoice(
     _admin: AdminUser,
     State(state): State<AppState>,
     AppPath(id): AppPath<Uuid>,
 ) -> ApiResult<Json<AdminOrderDetail>> {
-    ensure_exists(&state, id).await?;
+    let detail = orders::get_detail(&state.db, id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if !matches!(
+        detail.order.status.as_str(),
+        STATUS_PAID | STATUS_SHIPPED | STATUS_COMPLETED
+    ) {
+        return Err(ApiError::field(
+            "status",
+            "只有已付款、已出貨或已完成的訂單能重開發票",
+        ));
+    }
     let mut tx = state.db.begin().await?;
     if !invoices::reset_for_retry_in_tx(&mut tx, id).await? {
         tx.rollback().await?;

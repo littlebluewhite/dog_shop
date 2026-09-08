@@ -835,6 +835,16 @@ async fn mutating_admin_order_routes_require_admin(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Task 7 加的四條路由（審查 Minor 6）也要驗
+    for action in ["cancel", "mark-refunded", "retry-invoice", "clear-refund"] {
+        let path = format!("/api/admin/orders/{id}/{action}");
+        let (status, _, _) =
+            common::send(&app, common::req("POST", &path, None, Some(json!({})))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
+        let (status, _) = post(&app, &customer, &path, json!({})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+    }
 }
 
 async fn stock_of(pool: &PgPool, id: Uuid) -> i32 {
@@ -917,6 +927,60 @@ async fn admin_cancel_only_pending_restores_stock_and_expires_payments(pool: PgP
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// cancel_with_payments_in_tx 的 rollback：訂單不是 pending_payment，cancel_in_tx 回 false，
+/// 連帶把 payments 的 UPDATE 也整筆撤銷，不能留下 expired（Task 7 審查 Minor 4）
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_cancel_rolls_back_payments_update_when_order_not_cancellable(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let admin = common::admin_cookie(&app, &pool).await;
+    let (id, _, token) = place_order(&app, &pool, "home").await;
+    // 第一筆付款成功、之後買家又按了一次重新付款，留一筆還在等的付款嘗試
+    mark_paid(&pool, id).await;
+    sqlx::query("UPDATE orders SET status = 'pending_payment' WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, _, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            &format!("/api/orders/{id}/repay?t={token}"),
+            None,
+            Some(json!({})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    sqlx::query("UPDATE orders SET status = 'paid' WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        payment_statuses(&pool, id).await,
+        vec!["paid".to_string(), "pending".to_string()]
+    );
+
+    let (status, _) = post(
+        &app,
+        &admin,
+        &format!("/api/admin/orders/{id}/cancel"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "已付款不能用取消，要走標記已退款"
+    );
+    assert_eq!(
+        payment_statuses(&pool, id).await,
+        vec!["paid".to_string(), "pending".to_string()],
+        "cancel_in_tx 回 false，payments 的 UPDATE 要一起 rollback"
+    );
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn mark_refunded_paid_order_restores_stock_expires_pending_and_clears_flag(pool: PgPool) {
     let app = common::app(pool.clone());
@@ -985,13 +1049,14 @@ async fn mark_refunded_shipped_order_keeps_stock(pool: PgPool) {
     let admin = common::admin_cookie(&app, &pool).await;
     let (id, _, _) = place_order(&app, &pool, "home").await;
     mark_paid(&pool, id).await;
-    post(
+    let (status, d) = post(
         &app,
         &admin,
         &format!("/api/admin/orders/{id}/ship-home"),
         json!({ "carrier": "黑貓", "tracking_no": "1" }),
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "{d}");
 
     let (status, d) = post(
         &app,
@@ -1069,6 +1134,56 @@ async fn retry_invoice_resets_failed_invoice_and_enqueues_job(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "已開立不能重試");
+}
+
+/// 訂單不在 paid／shipped／completed 就不能重開發票（守衛擋在 reset_for_retry_in_tx 之前，不動發票）：
+/// 不然發票被 reset 成 pending 之後，issue_invoice job 遇到不可開票的訂單狀態只會靜默略過，
+/// 發票永遠卡在 pending 出不來（Task 7 審查 Important 1）
+#[sqlx::test(migrations = "./migrations")]
+async fn retry_invoice_rejects_non_payable_order(pool: PgPool) {
+    let (app, state) = common::app_with_state(pool.clone());
+    let admin = common::admin_cookie(&app, &pool).await;
+    let (id, _, _) = place_order(&app, &pool, "home").await;
+    mark_paid(&pool, id).await;
+    sqlx::query("UPDATE invoices SET status = 'failed', error = '綠界回錯' WHERE order_id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, d) = post(
+        &app,
+        &admin,
+        &format!("/api/admin/orders/{id}/mark-refunded"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{d}");
+
+    let (status, body) = post(
+        &app,
+        &admin,
+        &format!("/api/admin/orders/{id}/retry-invoice"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"]["details"]["fields"]["status"].is_string());
+
+    let invoice_status: String =
+        sqlx::query_scalar("SELECT status FROM invoices WHERE order_id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(invoice_status, "failed", "守衛擋下就不該動發票");
+
+    run_all_jobs(&state).await;
+    assert_eq!(
+        common::fake_invoices(&state).calls().len(),
+        0,
+        "沒有排新 job，不該打綠界"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
