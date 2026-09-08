@@ -71,7 +71,11 @@ async fn shutdown_signal() {
             Ok(mut sig) => {
                 sig.recv().await;
             }
-            Err(e) => tracing::error!(error = %e, "無法監聽 SIGTERM"),
+            // 註冊失敗時不能讓這個 future 完成，否則 select! 會立刻觸發、剛啟動就關機
+            Err(e) => {
+                tracing::error!(error = %e, "無法監聽 SIGTERM");
+                std::future::pending::<()>().await;
+            }
         }
     };
     #[cfg(not(unix))]

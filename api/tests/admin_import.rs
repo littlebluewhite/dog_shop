@@ -349,6 +349,108 @@ async fn reimport_updates_in_place_and_keeps_what_the_sheet_leaves_blank(pool: P
     );
 }
 
+/// 「工作表就是全部」：沒列到的規格會被刪掉（沒有訂單引用時是真的 DELETE，有引用才改
+/// is_active = false）。老闆最自然的用法「只想調這幾樣的價錢」會踩到，預覽也不會警告，
+/// 所以手冊 §8 與匯入頁都寫了這件事——這個測試把行為釘住，改壞了要有人知道。
+#[sqlx::test(migrations = "./migrations")]
+async fn variants_missing_from_the_sheet_are_removed(pool: PgPool) {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (app, _state) = common::app_with_state(pool.clone());
+    let cookie = common::admin_cookie(&app, &pool).await;
+
+    // 先用兩個規格的工作表建一個商品
+    let two = xlsx(&[
+        s(HEADER),
+        s(&[
+            "V1", "狗糧", "", "", "口味", "雞肉", "", "", "1200", "10", "", "",
+        ]),
+        s(&["V1", "", "", "", "", "牛肉", "", "", "1300", "5", "", ""]),
+    ]);
+    let (_, body, _) = common::send(
+        &app,
+        multipart(&cookie, "/api/admin/import/preview", &two, None),
+    )
+    .await;
+    let fp = body["fingerprint"].as_str().unwrap().to_string();
+    let (status, body, _) = common::send(
+        &app,
+        multipart(
+            &cookie,
+            "/api/admin/import/commit",
+            &two,
+            Some(("fingerprint", &fp)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let before = dog_shop_api::domain::products::find_by_external_ref(&pool, "V1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.variants.len(), 2, "前置條件：兩個規格");
+    let chicken_id = before
+        .variants
+        .iter()
+        .find(|v| v.option1_value.as_deref() == Some("雞肉"))
+        .unwrap()
+        .id;
+
+    // 只想調雞肉的價錢，就只列雞肉那一列
+    let one = xlsx(&[
+        s(HEADER),
+        s(&[
+            "V1", "狗糧", "", "", "口味", "雞肉", "", "", "1250", "10", "", "",
+        ]),
+    ]);
+    let (_, body, _) = common::send(
+        &app,
+        multipart(&cookie, "/api/admin/import/preview", &one, None),
+    )
+    .await;
+    assert_eq!(
+        body["variant_count"],
+        json!(1),
+        "預覽只說「1 個規格」，沒有任何「另外兩個會被刪掉」的警告"
+    );
+    let fp = body["fingerprint"].as_str().unwrap().to_string();
+    let (status, body, _) = common::send(
+        &app,
+        multipart(
+            &cookie,
+            "/api/admin/import/commit",
+            &one,
+            Some(("fingerprint", &fp)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"]["updated"], json!(1));
+
+    // 直接查表（不經過 domain 層）：沒有訂單引用時是真的少了一列，不是 is_active = false
+    let remaining: Vec<String> = sqlx::query_scalar(
+        "SELECT coalesce(option1_value, '(無)') FROM product_variants WHERE product_id = $1 ORDER BY 1",
+    )
+    .bind(before.product.id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        remaining,
+        vec!["雞肉".to_string()],
+        "工作表沒列到的牛肉整列消失（連停用的殭屍列都沒有）"
+    );
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM product_variants WHERE product_id = $1 AND id = $2",
+    )
+    .bind(before.product.id)
+    .bind(chicken_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(kept, 1, "留下的那一列是對回既有 id 的原本那個雞肉規格");
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn commit_is_refused_with_row_errors_or_a_stale_fingerprint(pool: PgPool) {
     let (app, _state) = common::app_with_state(pool.clone());
@@ -406,6 +508,42 @@ async fn commit_is_refused_with_row_errors_or_a_stale_fingerprint(pool: PgPool) 
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // 空字串的 fingerprint 欄位＝沒帶，不是「不符」
+    let (status, body, _) = common::send(
+        &app,
+        multipart(
+            &cookie,
+            "/api/admin/import/commit",
+            &good,
+            Some(("fingerprint", "")),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"]["details"]["fields"]["fingerprint"],
+        json!("請先預覽")
+    );
+
+    // 指紋比對排在解析之前：換成一個根本不是 xlsx 的檔案＋舊指紋，要回「檔案已變更」，
+    // 不是「檔案不是 xlsx 或已損壞」——這是唯一會叫老闆整個重來的訊息，要準
+    let (status, body, _) = common::send(
+        &app,
+        multipart(
+            &cookie,
+            "/api/admin/import/commit",
+            b"not an xlsx at all",
+            Some(("fingerprint", &fp)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"]["details"]["fields"]["fingerprint"],
+        json!("檔案已變更，請重新預覽")
+    );
+
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM products")
         .fetch_one(&pool)
         .await
@@ -498,7 +636,9 @@ async fn commit_writes_nothing_when_a_later_product_fails_validation(pool: PgPoo
         first_row: 2,
         name: "正常".to_string(),
         description: None,
-        category: None,
+        // 有值，末尾「乾跑不建分類」的斷言才有東西可斷：分類是在寫入迴圈裡才
+        // find_or_create（apply.rs:61），validate_all 這一輪不能建出來
+        category: Some("乾跑不該建的分類".to_string()),
         option1_name: None,
         option2_name: None,
         image_urls: vec![],

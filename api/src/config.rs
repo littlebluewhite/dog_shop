@@ -302,7 +302,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn cfg(base: &str) -> Config {
         Config {
@@ -405,22 +404,28 @@ mod tests {
             .collect()
     }
 
+    /// 每個機密欄位都給一個**獨一無二、不會是任何訊息子字串**的假值，
+    /// `error_messages_never_contain_secret_values` 才有東西可以掃。
     fn prod_ok() -> HashMap<String, String> {
         vars(&[
-            ("DATABASE_URL", "postgres://x"),
+            (
+                "DATABASE_URL",
+                "postgres://dbuser:FAKEdbpass000001@db.example.com/dog_shop",
+            ),
             ("ECPAY_ENV", "prod"),
             ("PUBLIC_BASE_URL", "https://shop.example.com/"),
             ("ECPAY_AIO_MERCHANT_ID", "1234567"),
-            ("ECPAY_AIO_HASH_KEY", "aaaaaaaaaaaaaaaa"),
-            ("ECPAY_AIO_HASH_IV", "bbbbbbbbbbbbbbbb"),
+            ("ECPAY_AIO_HASH_KEY", "FAKEaiohashkey01"),
+            ("ECPAY_AIO_HASH_IV", "FAKEaiohashiv001"),
             ("ECPAY_INVOICE_MERCHANT_ID", "1234567"),
-            ("ECPAY_INVOICE_HASH_KEY", "cccccccccccccccc"),
-            ("ECPAY_INVOICE_HASH_IV", "dddddddddddddddd"),
+            ("ECPAY_INVOICE_HASH_KEY", "FAKEinvhashkey01"),
+            ("ECPAY_INVOICE_HASH_IV", "FAKEinvhashiv001"),
             ("ECPAY_LOGISTICS_MERCHANT_ID", "1234567"),
-            ("ECPAY_LOGISTICS_HASH_KEY", "eeeeeeeeeeeeeeee"),
-            ("ECPAY_LOGISTICS_HASH_IV", "ffffffffffffffff"),
+            ("ECPAY_LOGISTICS_HASH_KEY", "FAKEloghashkey01"),
+            ("ECPAY_LOGISTICS_HASH_IV", "FAKEloghashiv001"),
             ("SMTP_HOST", "smtp.example.com"),
             ("SMTP_FROM", "shop@example.com"),
+            ("SMTP_PASS", "FAKEsmtppass0001"),
         ])
     }
 
@@ -518,14 +523,59 @@ mod tests {
         assert_eq!(Config::from_vars(&v).unwrap().listen_addr, "127.0.0.1:9090");
     }
 
+    /// 規格 §11：拒絕訊息只能講變數名，不能帶值。三個 prefix 各跑一次（`credentials` 對
+    /// aio／invoice／logistics 各呼叫一次，是三條不同的路徑）。
+    /// 注意：**不能**整份 `prod_ok()` 全掃——`ECPAY_ENV=prod` 本身是它的一個值，而每一句拒絕
+    /// 訊息都合法地含有「ECPAY_ENV=prod 時」。只掃真的是機密的欄位。
     #[test]
     fn error_messages_never_contain_secret_values() {
-        let mut v = prod_ok();
-        v.insert("ECPAY_AIO_HASH_KEY".into(), STAGE_AIO.1.into());
-        let err = Config::from_vars(&v).unwrap_err().to_string();
-        assert!(
-            !err.contains(STAGE_AIO.1) && !err.contains("aaaaaaaaaaaaaaaa"),
-            "{err}"
-        );
+        const SECRET_KEYS: [&str; 8] = [
+            "ECPAY_AIO_HASH_KEY",
+            "ECPAY_AIO_HASH_IV",
+            "ECPAY_INVOICE_HASH_KEY",
+            "ECPAY_INVOICE_HASH_IV",
+            "ECPAY_LOGISTICS_HASH_KEY",
+            "ECPAY_LOGISTICS_HASH_IV",
+            "SMTP_PASS",
+            "DATABASE_URL",
+        ];
+        let stage_values = [
+            STAGE_AIO.0,
+            STAGE_AIO.1,
+            STAGE_AIO.2,
+            STAGE_INVOICE.0,
+            STAGE_INVOICE.1,
+            STAGE_INVOICE.2,
+            STAGE_LOGISTICS.0,
+            STAGE_LOGISTICS.1,
+            STAGE_LOGISTICS.2,
+        ];
+        let base = prod_ok();
+        for (prefix, stage) in [
+            ("ECPAY_AIO", STAGE_AIO),
+            ("ECPAY_INVOICE", STAGE_INVOICE),
+            ("ECPAY_LOGISTICS", STAGE_LOGISTICS),
+        ] {
+            // 用該 prefix 的測試特店 hash_key 觸發它自己那一句拒絕訊息
+            let mut v = base.clone();
+            v.insert(format!("{prefix}_HASH_KEY"), stage.1.to_string());
+            let err = Config::from_vars(&v).unwrap_err().to_string();
+            assert!(err.contains(prefix), "訊息要指名是哪一組憑證：{err}");
+            for key in SECRET_KEYS {
+                let value = base
+                    .get(key)
+                    .unwrap_or_else(|| panic!("prod_ok() 缺 {key}"));
+                assert!(
+                    !err.contains(value.as_str()),
+                    "{prefix}：{key} 的值出現在訊息裡：{err}"
+                );
+            }
+            for secret in stage_values {
+                assert!(
+                    !err.contains(secret),
+                    "{prefix}：測試特店的值 {secret} 出現在訊息裡：{err}"
+                );
+            }
+        }
     }
 }

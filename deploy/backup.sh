@@ -9,7 +9,9 @@ KEEP="${BACKUP_KEEP_DAYS:-14}"
 run_once() {
   mkdir -p "$DIR"
   f="$DIR/dog_shop-$(date +%Y%m%d-%H%M%S).dump"
-  pg_dump -Fc -f "$f.tmp" && mv "$f.tmp" "$f"
+  # 失敗要自己清掉 .tmp：下面的 find 只配 dog_shop-*.dump，殘留的 .dump.tmp 永遠不會被回收
+  pg_dump -Fc -f "$f.tmp" || { rm -f "$f.tmp"; return 1; }
+  mv "$f.tmp" "$f"
   find "$DIR" -name 'dog_shop-*.dump' -mtime +"$KEEP" -delete
   echo "backup ok: $f"
 }

@@ -71,7 +71,9 @@ jobs:
           context: ./api
           push: false
           cache-from: type=gha,scope=api
-          cache-to: type=gha,mode=max,scope=api
+          # mode=min：只推最終層。Rust build stage 有整棵 target/（好幾 GB），mode=max
+          # 會把它塞進 repo 只有 10 GB 的 GHA 快取，擠掉別的 job。
+          cache-to: type=gha,mode=min,scope=api
       - uses: docker/build-push-action@v6
         with:
           context: ./web

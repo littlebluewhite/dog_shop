@@ -124,15 +124,19 @@ async fn commit(
     State(state): State<AppState>,
     AppMultipart(multipart): AppMultipart,
 ) -> ApiResult<Json<CommitResponse>> {
-    let upload = read_upload(multipart).await?;
-    let expected = upload
-        .fingerprint_field
-        .clone()
+    let Upload {
+        file,
+        fingerprint_field,
+    } = read_upload(multipart).await?;
+    // 指紋先比、再解析：換掉的檔案就算壞掉也要回「檔案已變更」，不是解析失敗的訊息；
+    // 空字串的 fingerprint 欄位等於沒帶（前端只在預覽成功後才會填）
+    let expected = fingerprint_field
+        .filter(|s| !s.is_empty())
         .ok_or_else(|| ApiError::field("fingerprint", "請先預覽"))?;
-    let preview = parse_and_count(&state, &upload.file).await?;
-    if preview.fingerprint != expected {
+    if fingerprint(&file) != expected {
         return Err(ApiError::field("fingerprint", "檔案已變更，請重新預覽"));
     }
+    let preview = parse_and_count(&state, &file).await?;
     if !preview.parsed.errors.is_empty() {
         return Err(ApiError::field(
             "rows",

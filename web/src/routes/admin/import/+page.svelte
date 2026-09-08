@@ -8,7 +8,6 @@
 	let result = $state<ImportCommit | null>(null);
 	let busy = $state<'preview' | 'commit' | null>(null);
 	let error = $state('');
-	let fieldErrors = $state<Record<string, string>>({});
 	/** 兩段確認：第一次按「確認匯入」只顯示確認鈕，第二次才真的送出 */
 	let confirming = $state(false);
 
@@ -18,7 +17,6 @@
 		preview = null;
 		result = null;
 		error = '';
-		fieldErrors = {};
 		confirming = false;
 	}
 
@@ -26,7 +24,6 @@
 		if (!file) return;
 		busy = 'preview';
 		error = '';
-		fieldErrors = {};
 		result = null;
 		confirming = false;
 		try {
@@ -36,7 +33,6 @@
 		} catch (e) {
 			preview = null;
 			if (e instanceof ApiError) {
-				fieldErrors = e.fields();
 				error = e.field('file') ?? e.message;
 			} else {
 				error = '預覽失敗，請再試一次';
@@ -50,17 +46,19 @@
 		if (!file || !preview || !canCommit(preview)) return;
 		busy = 'commit';
 		error = '';
-		fieldErrors = {};
+		// 上一次的「匯入完成」不能留在畫面上跟這次的錯誤並排
+		result = null;
 		try {
 			const form = new FormData();
 			form.append('fingerprint', preview.fingerprint);
 			form.append('file', file);
 			result = await api<ImportCommit>('/api/admin/import/commit', { method: 'POST', body: form });
+			// 收掉預覽（含「確認匯入」鈕）：同一份檔案再按一次會整批重跑、圖片全部重抓
+			preview = null;
 			confirming = false;
 		} catch (e) {
 			confirming = false;
 			if (e instanceof ApiError) {
-				fieldErrors = e.fields();
 				error = e.field('rows') ?? e.field('fingerprint') ?? e.field('file') ?? e.message;
 			} else {
 				error = '匯入失敗，請再試一次';
@@ -82,7 +80,7 @@
 
 <h1 class="text-2xl font-bold">匯入商品</h1>
 <p class="mt-1 text-sm text-gray-600">
-	上傳 xlsx（依範本或蝦皮匯出檔）。第一列是標題：商品編號、商品名稱、商品描述、分類、規格名稱1、規格選項1、規格名稱2、規格選項2、價格、庫存、SKU、圖片網址（逗號分隔，最多 9 個）。同一個商品編號的多列會合併成多規格；已存在的商品編號會更新既有商品。匯入的新商品是「草稿」，檢查後再上架。
+	上傳 xlsx（依範本或蝦皮匯出檔）。第一列是標題：商品編號、商品名稱、商品描述、分類、規格名稱1、規格選項1、規格名稱2、規格選項2、價格、庫存、SKU、圖片網址（逗號分隔，最多 9 個）。同一個商品編號的多列會合併成多規格；已存在的商品編號會更新既有商品。匯入的新商品是「草稿」，檢查後再上架。<strong>工作表沒有列到的規格會被刪除（有訂單引用的會改成停用），所以要改價也必須把該商品全部的規格都列出來，不能只列要改的那幾個。</strong>
 </p>
 
 <div class="mt-4 flex flex-wrap items-center gap-3">
