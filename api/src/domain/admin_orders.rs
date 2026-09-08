@@ -4,6 +4,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::domain::orders;
 use crate::domain::orders::{
     OrderItemRow, STATUS_CANCELLED, STATUS_COMPLETED, STATUS_PAID, STATUS_PENDING_PAYMENT,
     STATUS_REFUNDED, STATUS_SHIPPED,
@@ -218,5 +219,66 @@ pub async fn complete(db: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
     .execute(db)
     .await?
     .rows_affected();
+    Ok(n > 0)
+}
+
+/// 後台取消（規格 §4、與規格不同之處 43）：只允許 pending_payment；歸還庫存、pending 付款標 expired。
+/// 回 false = 狀態不允許
+pub async fn cancel(db: &PgPool, id: Uuid) -> Result<bool, ApiError> {
+    let mut tx = db.begin().await?;
+    if !orders::cancel_with_payments_in_tx(&mut tx, id, "admin").await? {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// 標記已退款（規格 §4、與規格不同之處 43）：paid 或 shipped → refunded；paid 時歸還庫存；pending 付款標
+/// expired；needs_refund 清掉。錢由老闆在綠界後台退。鎖序 payments → orders → product_variants
+pub async fn mark_refunded(db: &PgPool, id: Uuid) -> Result<bool, ApiError> {
+    let mut tx = db.begin().await?;
+    sqlx::query(
+        "UPDATE payments SET status = $2, updated_at = now() WHERE order_id = $1 AND status = $3",
+    )
+    .bind(id)
+    .bind(payments::PAYMENT_EXPIRED)
+    .bind(payments::PAYMENT_PENDING)
+    .execute(&mut *tx)
+    .await?;
+    let status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM orders WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(status) = status else {
+        tx.rollback().await?;
+        return Ok(false);
+    };
+    if status != STATUS_PAID && status != STATUS_SHIPPED {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    if status == STATUS_PAID {
+        orders::restore_stock_in_tx(&mut tx, id).await?;
+    }
+    sqlx::query(
+        "UPDATE orders SET status = $2, needs_refund = false, cancelled_at = now(), cancel_reason = 'refunded' WHERE id = $1",
+    )
+    .bind(id)
+    .bind(STATUS_REFUNDED)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// 遲到付款已在綠界後台退款 → 清掉「需退款」（規格 §4）。回 false = 本來就沒有
+pub async fn clear_refund(db: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+    let n = sqlx::query("UPDATE orders SET needs_refund = false WHERE id = $1 AND needs_refund")
+        .bind(id)
+        .execute(db)
+        .await?
+        .rows_affected();
     Ok(n > 0)
 }

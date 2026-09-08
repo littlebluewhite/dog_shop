@@ -10,6 +10,7 @@ pub use crate::domain::addresses::is_postal_code;
 use crate::domain::cvs_stores::{self, CvsStore};
 use crate::domain::invoices::{self, InvoiceRow};
 use crate::domain::jobs;
+use crate::domain::payments;
 use crate::domain::settings::{self, PaymentMethods, ShippingSettings};
 pub use crate::domain::users::is_tw_mobile;
 use crate::domain::users::{User, is_valid_email, normalize_email};
@@ -802,7 +803,7 @@ pub async fn list_for_user(
 // ───── 取消 ─────
 
 /// 只有 pending_payment 能取消；成功就把 order_items 的數量加回庫存（規格 §4、§5）。
-/// 回 Ok(false) 表示狀態不允許。計畫 3 的過期 job、計畫 4 的後台取消也用這個。
+/// 回 Ok(false) 表示狀態不允許。過期 job、後台取消都經過這裡
 pub async fn cancel_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     order_id: Uuid,
@@ -821,6 +822,15 @@ pub async fn cancel_in_tx(
     if updated == 0 {
         return Ok(false);
     }
+    restore_stock_in_tx(tx, order_id).await?;
+    Ok(true)
+}
+
+/// 把 order_items 的數量加回庫存（取消、過期、已付未出貨的退款共用；規格 §5）。呼叫者已持有訂單列的鎖
+pub async fn restore_stock_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    order_id: Uuid,
+) -> Result<(), ApiError> {
     // 逐列、依 variant_id 排序加回去：和 create_order 的鎖定順序一致，
     // 批次過期取消（計畫 3）與同時下單不會互相死鎖（計畫 2 審查 Minor 4）
     let items: Vec<(Uuid, i32)> = sqlx::query_as(
@@ -836,7 +846,26 @@ pub async fn cancel_in_tx(
             .execute(&mut **tx)
             .await?;
     }
-    Ok(true)
+    Ok(())
+}
+
+/// 取消並把還在等的付款嘗試標 expired（計畫 3 審查交接 3、與規格不同之處 38）。
+/// 鎖序 payments → orders → product_variants，和 expire_one／apply_return 一致。
+/// 回 false 時呼叫者要 rollback（payments 的更新一併撤銷）
+pub async fn cancel_with_payments_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    order_id: Uuid,
+    reason: &str,
+) -> Result<bool, ApiError> {
+    sqlx::query(
+        "UPDATE payments SET status = $2, updated_at = now() WHERE order_id = $1 AND status = $3",
+    )
+    .bind(order_id)
+    .bind(payments::PAYMENT_EXPIRED)
+    .bind(payments::PAYMENT_PENDING)
+    .execute(&mut **tx)
+    .await?;
+    cancel_in_tx(tx, order_id, reason).await
 }
 
 /// 買家取消（與規格不同之處 13）：看不到 → NotFound；狀態不對 → VALIDATION
@@ -854,7 +883,7 @@ pub async fn cancel(db: &PgPool, id: Uuid, viewer: &Viewer, reason: &str) -> Res
     if !visible {
         return Err(ApiError::NotFound);
     }
-    if !cancel_in_tx(&mut tx, id, reason).await? {
+    if !cancel_with_payments_in_tx(&mut tx, id, reason).await? {
         return Err(ApiError::Validation {
             message: "這筆訂單已經不能取消".to_string(),
             details: Value::Null,

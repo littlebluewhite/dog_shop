@@ -776,7 +776,10 @@ async fn info_after_cancel_is_ignored(pool: PgPool) {
     assert!(bank.is_none(), "訂單已取消，不寫入繳費資訊");
     assert!(vaccount.is_none());
     assert!(expire_at.is_none());
-    assert_eq!(p_status, "pending");
+    assert_eq!(
+        p_status, "expired",
+        "買家取消會先把等待中的付款嘗試標 expired，回呼不再動它"
+    );
     assert_eq!(
         jobs_of(&pool, "send_email").await.len(),
         1,

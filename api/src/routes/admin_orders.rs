@@ -14,6 +14,7 @@ use crate::{
     auth::extract::AdminUser,
     domain::{
         admin_orders::{self, AdminOrderDetail, AdminOrderListItem, Flag},
+        invoices, jobs,
         orders::{self, SHIPPING_CVS, SHIPPING_HOME, STATUS_PAID},
         products::{self, Page},
         settings,
@@ -37,6 +38,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/admin/orders/{id}/ship-home", post(ship_home))
         .route("/api/admin/orders/{id}/print-label", post(print_label))
         .route("/api/admin/orders/{id}/complete", post(complete))
+        .route("/api/admin/orders/{id}/cancel", post(cancel))
+        .route("/api/admin/orders/{id}/mark-refunded", post(mark_refunded))
+        .route("/api/admin/orders/{id}/retry-invoice", post(retry_invoice))
+        .route("/api/admin/orders/{id}/clear-refund", post(clear_refund))
 }
 
 #[derive(Deserialize)]
@@ -309,6 +314,81 @@ async fn complete(
     }
     if !admin_orders::complete(&state.db, id).await? {
         return Err(ApiError::field("status", "只有已出貨的訂單能標記完成"));
+    }
+    admin_detail(&state, id).await
+}
+
+async fn ensure_exists(state: &AppState, id: Uuid) -> ApiResult<()> {
+    if orders::get_detail(&state.db, id).await?.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    Ok(())
+}
+
+/// 後台取消：只有待付款（規格 §4）
+async fn cancel(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    AppPath(id): AppPath<Uuid>,
+) -> ApiResult<Json<AdminOrderDetail>> {
+    ensure_exists(&state, id).await?;
+    if !admin_orders::cancel(&state.db, id).await? {
+        return Err(ApiError::field(
+            "status",
+            "只有待付款的訂單能取消；已付款的請先在綠界後台退款，再按「標記已退款」",
+        ));
+    }
+    admin_detail(&state, id).await
+}
+
+/// 標記已退款（規格 §4）
+async fn mark_refunded(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    AppPath(id): AppPath<Uuid>,
+) -> ApiResult<Json<AdminOrderDetail>> {
+    ensure_exists(&state, id).await?;
+    if !admin_orders::mark_refunded(&state.db, id).await? {
+        return Err(ApiError::field(
+            "status",
+            "只有已付款或已出貨的訂單能標記退款",
+        ));
+    }
+    admin_detail(&state, id).await
+}
+
+/// 重開發票（規格 §8.4、與規格不同之處 44）：failed → pending，排新的 issue_invoice job
+async fn retry_invoice(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    AppPath(id): AppPath<Uuid>,
+) -> ApiResult<Json<AdminOrderDetail>> {
+    ensure_exists(&state, id).await?;
+    let mut tx = state.db.begin().await?;
+    if !invoices::reset_for_retry_in_tx(&mut tx, id).await? {
+        tx.rollback().await?;
+        return Err(ApiError::field("invoice", "只有開立失敗的發票能重試"));
+    }
+    jobs::enqueue(
+        &mut tx,
+        jobs::KIND_ISSUE_INVOICE,
+        json!({ "order_id": id }),
+        Some(&format!("invoice:{id}:retry:{}", Utc::now().timestamp())),
+    )
+    .await?;
+    tx.commit().await?;
+    admin_detail(&state, id).await
+}
+
+/// 遲到付款已處理（規格 §4）
+async fn clear_refund(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    AppPath(id): AppPath<Uuid>,
+) -> ApiResult<Json<AdminOrderDetail>> {
+    ensure_exists(&state, id).await?;
+    if !admin_orders::clear_refund(&state.db, id).await? {
+        return Err(ApiError::field("needs_refund", "這筆訂單沒有待處理的退款"));
     }
     admin_detail(&state, id).await
 }

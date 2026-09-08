@@ -82,7 +82,8 @@ pub async fn mark_issued_in_tx(
     Ok(())
 }
 
-/// 記錄一次失敗；最後一次嘗試時把狀態標 failed（後台顯示、重試在計畫 4）
+/// 記錄一次失敗；最後一次嘗試時把狀態標 failed（後台顯示、重試在計畫 4）。
+/// 已開立的永遠不降級：一次成功一次失敗的並行不能把 issued 蓋成 failed
 pub async fn record_failure(
     db: &PgPool,
     order_id: Uuid,
@@ -94,14 +95,32 @@ pub async fn record_failure(
     sqlx::query(
         "UPDATE invoices SET status = CASE WHEN $4 THEN $5 ELSE status END, response = COALESCE($2, response),
                 error = $3, updated_at = now()
-         WHERE order_id = $1",
+         WHERE order_id = $1 AND status <> $6",
     )
     .bind(order_id)
     .bind(response)
     .bind(error)
     .bind(final_attempt)
     .bind(STATUS_FAILED)
+    .bind(STATUS_ISSUED)
     .execute(db)
     .await?;
     Ok(())
+}
+
+/// 後台重開（與規格不同之處 44）：只有 failed 能重設成 pending，之後排新的 issue_invoice job。回 false = 不是 failed
+pub async fn reset_for_retry_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    order_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let n = sqlx::query(
+        "UPDATE invoices SET status = $2, error = NULL, updated_at = now() WHERE order_id = $1 AND status = $3",
+    )
+    .bind(order_id)
+    .bind(STATUS_PENDING)
+    .bind(STATUS_FAILED)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    Ok(n > 0)
 }
