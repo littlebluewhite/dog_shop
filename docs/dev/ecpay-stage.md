@@ -16,7 +16,20 @@
 3. 回到訂單頁（綠界的「返回商店」= `ClientBackURL`）：幾秒內狀態變「已付款」。
 4. api log：`ReturnURL 處理完成 … outcome=Paid`，接著 `發票開立成功 invoice_no=…`、兩封 Email（`已收到款項`、`電子發票已開立`）的 info。
 5. DB：`SELECT status, invoice_no, random_number FROM invoices` 有值；`SELECT status, ecpay_trade_no, raw->>'RtnMsg' FROM payments`。
+   - 待確認：`CarrierType=1` 不帶 `CustomerID` 是否能成功開立（與規格不同之處 29 的未確認項）。
+   - 待確認：綠界回應的 `RtnCode` 是數字還是字串（`api/src/ecpay/invoice.rs:218` 只用 `as_i64` 讀，若是字串會一路重試到 `failed`）。
 6. 綠界發票 stage 後台 `https://einvoice-stage.ecpay.com.tw`（Stagetest1234 / test1234）→ 發票查詢，能看到同一張。
+
+## 公司發票
+
+1. 結帳時發票選「公司（統一編號）」→ 統一編號 `04595257`、發票抬頭（例如「測試公司」）、發票地址（例如「台北市信義區市府路 1 號」）→ 付款方式「信用卡」→ 走完「信用卡」節步驟 1–3。
+2. DB：`SELECT status, invoice_no FROM invoices` 應為 `issued`。
+3. 綠界發票 stage 後台查同一張，`Print` 欄位應為 `1`。
+
+## 捐贈發票
+
+1. 結帳時發票選「捐贈」→ 愛心碼 `168` → 付款方式「信用卡」→ 走完「信用卡」節步驟 1–3。
+2. DB：`SELECT status, invoice_no FROM invoices` 應為 `issued`。
 
 ## 模擬付款（SimulatePaid）
 
