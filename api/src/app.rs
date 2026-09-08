@@ -35,6 +35,7 @@ pub fn router(state: AppState) -> Router {
         .merge(routes::health::router())
         .merge(routes::settings::router())
         .merge(routes::admin_settings::router())
+        .merge(routes::admin_orders::router())
         .merge(routes::auth::router())
         .merge(routes::me::router())
         .merge(routes::categories::router())

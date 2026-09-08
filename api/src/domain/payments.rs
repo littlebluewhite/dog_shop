@@ -1,5 +1,6 @@
 //! payments 表（規格 §3、§4、§7 第 8、9 點）：回呼寫入。重新付款在 Task 7 補在這個檔案下面
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -14,7 +15,7 @@ pub const PAYMENT_PAID: &str = "paid";
 pub const PAYMENT_FAILED: &str = "failed";
 pub const PAYMENT_EXPIRED: &str = "expired";
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct Payment {
     pub id: Uuid,
     pub order_id: Uuid,
@@ -29,6 +30,7 @@ pub struct Payment {
     pub atm_vaccount: Option<String>,
     pub cvs_payment_no: Option<String>,
     pub expire_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
 
 /// 剛建立的付款嘗試要拿去組綠界表單（routes::orders::repay）
@@ -50,13 +52,24 @@ impl From<Payment> for PaymentRow {
 
 const PAYMENT_COLUMNS: &str =
     "id, order_id, merchant_trade_no, method, status, amount, ecpay_trade_no, payment_type,
-     payment_date, atm_bank_code, atm_vaccount, cvs_payment_no, expire_at";
+     payment_date, atm_bank_code, atm_vaccount, cvs_payment_no, expire_at, created_at";
 
 pub async fn get(db: &PgPool, id: Uuid) -> Result<Option<Payment>, sqlx::Error> {
     let sql = format!("SELECT {PAYMENT_COLUMNS} FROM payments WHERE id = $1");
     sqlx::query_as::<_, Payment>(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(db)
+        .await
+}
+
+/// 後台看全部付款嘗試（新到舊；OrderDetail.payment 只有最新一筆）
+pub async fn list_for_order(db: &PgPool, order_id: Uuid) -> Result<Vec<Payment>, sqlx::Error> {
+    let sql = format!(
+        "SELECT {PAYMENT_COLUMNS} FROM payments WHERE order_id = $1 ORDER BY created_at DESC, id DESC"
+    );
+    sqlx::query_as::<_, Payment>(sqlx::AssertSqlSafe(sql))
+        .bind(order_id)
+        .fetch_all(db)
         .await
 }
 
