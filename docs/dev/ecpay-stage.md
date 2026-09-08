@@ -8,6 +8,7 @@
 2. 讓綠界打得到你的機器：`cloudflared tunnel --url http://localhost:5173`（沒有就 `brew install cloudflared`），記下它印出的 `https://xxxx.trycloudflare.com`。
 3. 根目錄 `.env`：`PUBLIC_BASE_URL=https://xxxx.trycloudflare.com`、`ECPAY_ENV=stage`（AIO／發票憑證留空會用公開測試憑證）。要看信件內容再設 `MAIL_LOG_BODY=1`（只在本機開發；內文含重設連結與訪客訂單網址）。`ECPAY_LOGISTICS_*` 留空會用物流 C2C 公開測試特店 2000933。
 4. 啟動：`export PATH="$HOME/.cargo/bin:$PATH" && cargo run --manifest-path api/Cargo.toml`、`pnpm -C web dev`。Vite 會把 `/api` 轉到 :8080，所以 cloudflared 只要指到 :5173。
+5. 正式部署與上線檢查見 `docs/deploy.md`。
 
 ## 信用卡
 
