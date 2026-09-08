@@ -34,6 +34,7 @@ lettre = { version = "0.11", default-features = false, features = [
   "tokio1",
   "tokio1-rustls-tls",
 ] }
+md-5 = "0.10"
 percent-encoding = "2"
 rand = "0.9"
 reqwest = { version = "0.13", default-features = false, features = ["charset", "http2", "json", "rustls-no-provider"] }

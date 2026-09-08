@@ -65,12 +65,16 @@ pub struct EcpayConfig {
     pub env: EcpayEnv,
     pub aio: EcpayCredentials,
     pub invoice: EcpayCredentials,
+    /// 物流 C2C（計畫 4）
+    pub logistics: EcpayCredentials,
 }
 
 /// 全方位金流測試特店（規格 §8.5；公開資料，只能用於 stage）：(MerchantID, HashKey, HashIV)
 pub const STAGE_AIO: (&str, &str, &str) = ("3002607", "pwFHCqoQZGmho4w6", "EkRm7iFT261dpevs");
 /// 電子發票 B2C 測試特店（developers.ecpay.com.tw「測試介接資訊」）
 pub const STAGE_INVOICE: (&str, &str, &str) = ("2000132", "ejCk326UnaZWKisg", "q9jcZX8Ib9LM8wYk");
+/// 物流 C2C 測試特店（developers.ecpay.com.tw/7398/「測試介接資訊」；B2C 的 2000132 不能混用）
+pub const STAGE_LOGISTICS: (&str, &str, &str) = ("2000933", "XBERn1YOvpM9nfZc", "h1ONHk4P4yqbl5LK");
 
 impl EcpayConfig {
     pub fn aio_checkout_url(&self) -> &'static str {
@@ -84,6 +88,14 @@ impl EcpayConfig {
         match self.env {
             EcpayEnv::Stage => "https://einvoice-stage.ecpay.com.tw/B2CInvoice/Issue",
             EcpayEnv::Prod => "https://einvoice.ecpay.com.tw/B2CInvoice/Issue",
+        }
+    }
+
+    /// 物流 API 主機（規格 §8.3 的 `/Express/*` 都接在後面），不含結尾斜線
+    pub fn logistics_base_url(&self) -> &'static str {
+        match self.env {
+            EcpayEnv::Stage => "https://logistics-stage.ecpay.com.tw",
+            EcpayEnv::Prod => "https://logistics.ecpay.com.tw",
         }
     }
 }
@@ -174,6 +186,7 @@ impl Config {
             env: ecpay_env,
             aio: credentials("ECPAY_AIO", ecpay_env, STAGE_AIO)?,
             invoice: credentials("ECPAY_INVOICE", ecpay_env, STAGE_INVOICE)?,
+            logistics: credentials("ECPAY_LOGISTICS", ecpay_env, STAGE_LOGISTICS)?,
         };
 
         let smtp = match env_trimmed("SMTP_HOST") {
@@ -219,6 +232,11 @@ impl Config {
                     merchant_id: STAGE_INVOICE.0.to_string(),
                     hash_key: STAGE_INVOICE.1.to_string(),
                     hash_iv: STAGE_INVOICE.2.to_string(),
+                },
+                logistics: EcpayCredentials {
+                    merchant_id: STAGE_LOGISTICS.0.to_string(),
+                    hash_key: STAGE_LOGISTICS.1.to_string(),
+                    hash_iv: STAGE_LOGISTICS.2.to_string(),
                 },
             },
             smtp: None,
@@ -324,6 +342,17 @@ mod tests {
         assert_eq!(
             cfg.ecpay.invoice_issue_url(),
             "https://einvoice.ecpay.com.tw/B2CInvoice/Issue"
+        );
+    }
+
+    #[test]
+    fn for_tests_uses_stage_logistics_credentials() {
+        let cfg = Config::for_tests(std::path::PathBuf::from("/tmp/dog_shop_cfg_test"));
+        assert_eq!(cfg.ecpay.logistics.merchant_id, "2000933");
+        assert_eq!(cfg.ecpay.logistics.hash_key, "XBERn1YOvpM9nfZc");
+        assert_eq!(
+            cfg.ecpay.logistics_base_url(),
+            "https://logistics-stage.ecpay.com.tw"
         );
     }
 }

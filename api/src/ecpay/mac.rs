@@ -1,5 +1,7 @@
 //! CheckMacValue（規格 §8.1）：參數依 key 排序（不分大小寫）→ `HashKey=…&k=v&…&HashIV=…`
-//! → .NET 風格 URL encode → 轉小寫 → SHA256 → 轉大寫。物流用的 MD5 版本在計畫 4。
+//! → .NET 風格 URL encode → 轉小寫 → 雜湊 → 轉大寫。全方位金流用 SHA256、物流用 MD5。
+//! `raw_string` 的輸出含 HashKey／HashIV：不要印進 log（規格 §11）
+use md5::Md5;
 use sha2::{Digest, Sha256};
 
 /// .NET `HttpUtility.UrlEncode` 的規則：`A-Z a-z 0-9 - _ . ! * ( )` 原樣、空白變 `+`、
@@ -48,8 +50,19 @@ pub fn check_mac_value(hash_key: &str, hash_iv: &str, params: &[(String, String)
     hex::encode_upper(digest)
 }
 
+/// MD5 的 CheckMacValue（物流 API；規格 §8.1），大寫 hex（32 字）
+pub fn check_mac_value_md5(hash_key: &str, hash_iv: &str, params: &[(String, String)]) -> String {
+    let digest = Md5::digest(raw_string(hash_key, hash_iv, params).as_bytes());
+    hex::encode_upper(digest)
+}
+
 /// 驗回呼：取出 `CheckMacValue`（key 不分大小寫），用其餘欄位重算再比對（值不分大小寫）
-pub fn verify(hash_key: &str, hash_iv: &str, params: &[(String, String)]) -> bool {
+fn verify_with(
+    hash_key: &str,
+    hash_iv: &str,
+    params: &[(String, String)],
+    compute: fn(&str, &str, &[(String, String)]) -> String,
+) -> bool {
     let Some((_, given)) = params
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("CheckMacValue"))
@@ -61,7 +74,17 @@ pub fn verify(hash_key: &str, hash_iv: &str, params: &[(String, String)]) -> boo
         .filter(|(k, _)| !k.eq_ignore_ascii_case("CheckMacValue"))
         .cloned()
         .collect();
-    check_mac_value(hash_key, hash_iv, &rest).eq_ignore_ascii_case(given)
+    compute(hash_key, hash_iv, &rest).eq_ignore_ascii_case(given)
+}
+
+/// 驗付款回呼（SHA256）
+pub fn verify(hash_key: &str, hash_iv: &str, params: &[(String, String)]) -> bool {
+    verify_with(hash_key, hash_iv, params, check_mac_value)
+}
+
+/// 驗物流回呼與建單回應（MD5）
+pub fn verify_md5(hash_key: &str, hash_iv: &str, params: &[(String, String)]) -> bool {
+    verify_with(hash_key, hash_iv, params, check_mac_value_md5)
 }
 
 #[cfg(test)]
@@ -143,5 +166,68 @@ mod tests {
             check_mac_value(KEY, IV, &doc_params()),
         ));
         assert!(!verify("wrongkey", IV, &params2), "key 不對不能過");
+    }
+
+    /// 物流 C2C 測試特店（config::STAGE_LOGISTICS）
+    const LKEY: &str = "XBERn1YOvpM9nfZc";
+    const LIV: &str = "h1ONHk4P4yqbl5LK";
+
+    /// developers.ecpay.com.tw 物流「檢查碼機制」（/7424/）的範例參數
+    fn logistics_doc_params() -> Vec<(String, String)> {
+        [
+            ("GoodsAmount", "1000"),
+            ("IsCollection", "N"),
+            ("LogisticsSubType", "FAMIC2C"),
+            ("LogisticsType", "CVS"),
+            ("MerchantID", "2000933"),
+            ("MerchantTradeDate", "2013/03/12 15:30:23"),
+            ("MerchantTradeNo", "A20130312153023"),
+            ("ReceiverName", "收件者姓名"),
+            ("ReceiverStoreID", "001779"),
+            ("SenderName", "寄件者姓名"),
+            ("ServerReplyURL", "https://www.ecpay.com.tw/ServerReplyURL"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+    }
+
+    #[test]
+    fn md5_check_mac_value_matches_logistics_doc() {
+        assert_eq!(
+            check_mac_value_md5(LKEY, LIV, &logistics_doc_params()),
+            "692FD6E2CDB539CCDB7206C76DC239AD"
+        );
+    }
+
+    #[test]
+    fn verify_md5_accepts_real_mac_and_rejects_tampered_or_wrong_key() {
+        let mut params = logistics_doc_params();
+        // 綠界回傳大寫，比對不分大小寫
+        params.push((
+            "CheckMacValue".to_string(),
+            "692fd6e2cdb539ccdb7206c76dc239ad".to_string(),
+        ));
+        assert!(verify_md5(LKEY, LIV, &params));
+        assert!(
+            !verify(LKEY, LIV, &params),
+            "SHA256 版不能拿 MD5 的簽章過關"
+        );
+
+        // GoodsAmount 是第 1 個
+        params[0].1 = "1001".to_string();
+        assert!(!verify_md5(LKEY, LIV, &params), "改了金額就不能過");
+
+        assert!(
+            !verify_md5(LKEY, LIV, &logistics_doc_params()),
+            "沒有 CheckMacValue 不能過"
+        );
+
+        let mut params2 = logistics_doc_params();
+        params2.push((
+            "CheckMacValue".to_string(),
+            check_mac_value_md5(LKEY, LIV, &logistics_doc_params()),
+        ));
+        assert!(!verify_md5("wrongkey", LIV, &params2), "key 不對不能過");
     }
 }
