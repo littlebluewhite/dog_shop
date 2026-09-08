@@ -86,6 +86,11 @@ describe('availableActions', () => {
 		const o = order({ status: 'completed', needs_refund: true, invoice: { status: 'failed', invoice_no: null, invoice_date: null, random_number: null, error: 'x', updated_at: '' } });
 		expect(availableActions(o)).toEqual(['retry_invoice', 'clear_refund']);
 	});
+	it('已退款：即使發票開立失敗也不能重開發票（後端只允許已付款／已出貨／已完成）', () => {
+		const o = order({ status: 'refunded', invoice: { status: 'failed', invoice_no: null, invoice_date: null, random_number: null, error: 'x', updated_at: '' } });
+		expect(availableActions(o)).not.toContain('retry_invoice');
+		expect(attentionNotes(o).some((n) => n.includes('發票開立失敗'))).toBe(true);
+	});
 });
 
 describe('attentionNotes', () => {

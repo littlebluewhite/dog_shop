@@ -19,7 +19,7 @@ export function availableActions(o: AdminOrderDetail): AdminAction[] {
 	if (o.status === 'shipped') actions.push('complete');
 	if (o.status === 'pending_payment') actions.push('cancel');
 	if (o.status === 'paid' || o.status === 'shipped') actions.push('mark_refunded');
-	if (o.invoice?.status === 'failed') actions.push('retry_invoice');
+	if (o.invoice?.status === 'failed' && (o.status === 'paid' || o.status === 'shipped' || o.status === 'completed')) actions.push('retry_invoice');
 	if (o.needs_refund) actions.push('clear_refund');
 	return actions;
 }
