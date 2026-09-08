@@ -1,5 +1,5 @@
 use dog_shop_api::import::{ImportError, parse_xlsx};
-use rust_xlsxwriter::{Format, Workbook};
+use rust_xlsxwriter::Workbook;
 
 fn sheet(rows: &[&[&str]]) -> Vec<u8> {
     let mut wb = Workbook::new();
@@ -60,7 +60,7 @@ fn formatted_empty_tail_rows_do_not_count() {
             }
         }
     }
-    ws.write_blank(6000, 0, &Format::new().set_bold()).unwrap();
+    ws.write_string(6000, 0, " ").unwrap();
     let bytes = wb.save_to_buffer().unwrap();
     let p = parse_xlsx(&bytes).unwrap();
     assert_eq!(p.row_count, 2);

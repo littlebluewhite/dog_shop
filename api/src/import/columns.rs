@@ -215,6 +215,7 @@ mod tests {
         assert_eq!(match_header("品牌"), None);
         assert_eq!(match_header(""), None);
         assert_eq!(match_header("規格1"), None);
+        assert_eq!(match_header("規格2"), None);
     }
 
     #[test]

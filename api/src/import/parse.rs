@@ -288,6 +288,7 @@ pub fn parse_grid(sheet: &str, grid: &[Vec<String>]) -> Result<ParsedImport, Imp
                 column: Some(Column::ExternalRef.label()),
                 message: "這一列有商品名稱但沒有商品編號".into(),
             });
+            last = None;
             out.row_count += 1;
             continue;
         } else {
@@ -592,6 +593,7 @@ mod tests {
                 "",
                 "",
             ],
+            &["", "", "", "", "", "藍", "", "", "70", "", "", ""],
         ]);
         let p = parse_grid("s", &g).unwrap();
         let msgs: Vec<(u32, Option<String>, String)> = p
@@ -656,6 +658,14 @@ mod tests {
                 9,
                 Some("商品編號".into()),
                 "這一列有商品名稱但沒有商品編號".into()
+            )),
+            "{msgs:?}"
+        );
+        assert!(
+            msgs.contains(&(
+                10,
+                Some("商品編號".into()),
+                "這一列沒有商品編號，也接不到上一個商品".into()
             )),
             "{msgs:?}"
         );
