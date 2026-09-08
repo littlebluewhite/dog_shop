@@ -11,14 +11,18 @@ use axum::{
 
 use crate::{
     domain::cvs_stores::{self, CvsStore},
+    domain::shipments::{self, StatusOutcome},
+    ecpay::aio::CallbackError,
     ecpay::logistics,
-    routes::ecpay_callback::{MAX_CALLBACK_FIELDS, parse_form},
+    routes::ecpay_callback::{MAX_CALLBACK_FIELDS, callback_error, parse_form, server_error, text},
     state::AppState,
 };
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/ecpay/logistics/map-reply", post(map_reply))
+        .route("/api/ecpay/logistics/status", post(status))
+        .route("/api/ecpay/logistics/store-update", post(store_update))
         // 回呼一律 < 2 KB；後掛的 layer 在內層，覆蓋 app.rs 給圖片上傳訂的 10 MB（計畫 3 修正波 #1）
         .layer(DefaultBodyLimit::max(64 * 1024))
 }
@@ -73,4 +77,50 @@ async fn map_reply(State(state): State<AppState>, body: String) -> Response {
     }
     tracing::info!(sub_type = %store.sub_type, store_id = %store.store_id, "map-reply 門市已存");
     redirect(format!("{base}/checkout?store={}", store.token))
+}
+
+/// 物流狀態通知（綠界伺服器 POST；規格 §8.3、§14）
+async fn status(State(state): State<AppState>, body: String) -> Response {
+    let params = parse_form(&body);
+    if params.len() > MAX_CALLBACK_FIELDS {
+        return callback_error("logistics-status", CallbackError::BadMac);
+    }
+    let notification = match logistics::parse_status(&state.config.ecpay, &params) {
+        Ok(n) => n,
+        Err(e) => return callback_error("logistics-status", e),
+    };
+    match shipments::apply_status(&state.db, &notification).await {
+        Ok(StatusOutcome::Unknown) => {
+            tracing::warn!(merchant_trade_no = %notification.merchant_trade_no, logistics_id = %notification.logistics_id, "物流狀態通知找不到單");
+            text(StatusCode::OK, "0|Unknown MerchantTradeNo")
+        }
+        Ok(outcome) => {
+            tracing::info!(merchant_trade_no = %notification.merchant_trade_no, rtn_code = notification.rtn_code, ?outcome, "物流狀態通知處理完成");
+            text(StatusCode::OK, "1|OK")
+        }
+        Err(e) => server_error("logistics-status", e),
+    }
+}
+
+/// 更新門市通知（7-11 C2C；與規格不同之處 35）
+async fn store_update(State(state): State<AppState>, body: String) -> Response {
+    let params = parse_form(&body);
+    if params.len() > MAX_CALLBACK_FIELDS {
+        return callback_error("logistics-store-update", CallbackError::BadMac);
+    }
+    let update = match logistics::parse_store_update(&state.config.ecpay, &params) {
+        Ok(u) => u,
+        Err(e) => return callback_error("logistics-store-update", e),
+    };
+    match shipments::apply_store_update(&state.db, &update).await {
+        Ok(false) => {
+            tracing::warn!(logistics_id = %update.logistics_id, "更新門市通知找不到單");
+            text(StatusCode::OK, "0|Unknown AllPayLogisticsID")
+        }
+        Ok(true) => {
+            tracing::info!(logistics_id = %update.logistics_id, status = %update.status, store_type = %update.store_type, "更新門市通知已記錄");
+            text(StatusCode::OK, "1|OK")
+        }
+        Err(e) => server_error("logistics-store-update", e),
+    }
 }

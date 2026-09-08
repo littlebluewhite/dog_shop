@@ -10,9 +10,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 /// stage 的物流憑證（Config::for_tests 用同一組）；Task 4 的狀態通知／門市更新測試才用得到
-#[allow(dead_code)]
 const KEY: &str = "XBERn1YOvpM9nfZc";
-#[allow(dead_code)]
 const IV: &str = "h1ONHk4P4yqbl5LK";
 
 fn f(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -47,7 +45,6 @@ async fn ecpay_post_raw(
 }
 
 /// 算好 MD5 CheckMacValue 再送（狀態通知、更新門市通知用）；Task 4 才會用到
-#[allow(dead_code)]
 async fn ecpay_post(
     app: &Router,
     path: &str,
@@ -344,4 +341,308 @@ async fn purge_removes_expired_map_requests(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(left, vec!["NewTokenAbcdefghijkl".to_string()]);
+}
+
+use uuid::Uuid;
+
+fn cvs_order_body(variant: &str, token: &str) -> Value {
+    json!({
+        "items": [{ "variant_id": variant, "qty": 2 }],
+        "email": "buyer@test.local",
+        "recipient_name": "王小明",
+        "recipient_phone": "0912345678",
+        "shipping_method": "cvs",
+        "cvs_store_token": token,
+        "invoice": { "type": "personal", "carrier_type": "1" },
+        "payment_method": "credit",
+        "note": ""
+    })
+}
+
+/// 建一筆超商訂單（訪客），用 SQL 直接標成已付款＋已出貨、物流單已建立（Task 6 的建單流程在這裡跳過）
+async fn shipped_cvs_order(app: &Router, pool: &PgPool, mtn: &str, logistics_id: &str) -> Uuid {
+    let (variant, _) = common::active_product(pool, "雞肉狗糧", 300, 5).await;
+    let token = common::cvs_store_token(pool).await;
+    let (status, created, _) = common::send(
+        app,
+        common::req(
+            "POST",
+            "/api/orders",
+            None,
+            Some(cvs_order_body(&variant.to_string(), &token)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = Uuid::parse_str(created["order_id"].as_str().unwrap()).unwrap();
+    sqlx::query(
+        "UPDATE orders SET status = 'shipped', paid_at = now(), shipped_at = now() WHERE id = $1",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE shipments SET status = 'created', ecpay_merchant_trade_no = $2, ecpay_logistics_id = $3 WHERE order_id = $1",
+    )
+    .bind(id)
+    .bind(mtn)
+    .bind(logistics_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+fn status_fields(mtn: &str, logistics_id: &str, code: &str, msg: &str) -> Vec<(String, String)> {
+    f(&[
+        ("MerchantID", "2000933"),
+        ("MerchantTradeNo", mtn),
+        ("RtnCode", code),
+        ("RtnMsg", msg),
+        ("AllPayLogisticsID", logistics_id),
+        ("LogisticsType", "CVS"),
+        ("LogisticsSubType", "UNIMARTC2C"),
+        ("GoodsAmount", "600"),
+        ("UpdateStatusDate", "2026/09/10 18:30:00"),
+        ("ReceiverName", "王小明"),
+        ("ReceiverCellPhone", "0912345678"),
+        ("CVSPaymentNo", "F0001234"),
+        ("CVSValidationNo", "1234"),
+    ])
+}
+
+/// (shipments.status, orders.status, last_status_code, last_status_msg, orders.completed_at 有無)
+async fn snapshot(
+    pool: &PgPool,
+    id: Uuid,
+) -> (String, String, Option<String>, Option<String>, bool) {
+    sqlx::query_as(
+        "SELECT s.status, o.status, s.last_status_code, s.last_status_msg, o.completed_at IS NOT NULL
+         FROM shipments s JOIN orders o ON o.id = s.order_id WHERE s.order_id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn status_callback_rejects_bad_mac_and_missing_fields(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let id = shipped_cvs_order(&app, &pool, "DS260908AAAAL01", "10035").await;
+
+    let mut fields = status_fields("DS260908AAAAL01", "10035", "2030", "物流中心驗收成功");
+    fields.push(("CheckMacValue".to_string(), "0".repeat(32)));
+    let (status, text, _) = ecpay_post_raw(&app, "/api/ecpay/logistics/status", fields).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(text, "0|CheckMacValue Error");
+
+    let mut fields = status_fields("DS260908AAAAL01", "10035", "2030", "x");
+    fields.retain(|(k, _)| k != "RtnCode");
+    let (status, text) = ecpay_post(&app, "/api/ecpay/logistics/status", fields).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(text, "0|Missing Field");
+
+    let (s, o, code, _, _) = snapshot(&pool, id).await;
+    assert_eq!((s.as_str(), o.as_str(), code), ("created", "shipped", None));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn status_callback_unknown_trade_no_answers_0(pool: PgPool) {
+    let app = common::app(pool);
+    let (status, text) = ecpay_post(
+        &app,
+        "/api/ecpay/logistics/status",
+        status_fields("DS000000ZZZZL01", "99999", "2030", "x"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(text, "0|Unknown MerchantTradeNo");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn status_callback_moves_forward_completes_on_pickup_and_never_regresses(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let id = shipped_cvs_order(&app, &pool, "DS260908BBBBL01", "10036").await;
+    let post = |code: &'static str, msg: &'static str| {
+        let app = app.clone();
+        async move {
+            ecpay_post(
+                &app,
+                "/api/ecpay/logistics/status",
+                status_fields("DS260908BBBBL01", "10036", code, msg),
+            )
+            .await
+        }
+    };
+
+    assert_eq!(
+        post("2030", "物流中心驗收成功").await,
+        (StatusCode::OK, "1|OK".to_string())
+    );
+    let (s, o, code, msg, _) = snapshot(&pool, id).await;
+    assert_eq!((s.as_str(), o.as_str()), ("in_transit", "shipped"));
+    assert_eq!(code.as_deref(), Some("2030"));
+    assert_eq!(msg.as_deref(), Some("物流中心驗收成功"));
+
+    assert_eq!(post("2073", "商品配達買家取貨門市").await.1, "1|OK");
+    assert_eq!(snapshot(&pool, id).await.0, "arrived");
+
+    // 晚到的物流中心通知：不倒退，但代碼照記
+    assert_eq!(post("2030", "物流中心驗收成功").await.1, "1|OK");
+    let (s, _, code, _, _) = snapshot(&pool, id).await;
+    assert_eq!((s.as_str(), code.as_deref()), ("arrived", Some("2030")));
+
+    assert_eq!(post("2067", "消費者成功取件").await.1, "1|OK");
+    let (s, o, _, _, completed) = snapshot(&pool, id).await;
+    assert_eq!(
+        (s.as_str(), o.as_str(), completed),
+        ("picked_up", "completed", true)
+    );
+
+    // 重複通知：no-op 仍回 1|OK；之後任何代碼都不改終態
+    assert_eq!(post("2067", "消費者成功取件").await.1, "1|OK");
+    assert_eq!(post("2074", "消費者七天未取").await.1, "1|OK");
+    let (s, o, _, _, _) = snapshot(&pool, id).await;
+    assert_eq!((s.as_str(), o.as_str()), ("picked_up", "completed"));
+
+    let raw: Value = sqlx::query_scalar("SELECT raw FROM shipments WHERE order_id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(raw["last_notification"]["RtnCode"], "2074");
+    assert!(
+        raw["last_notification"]["CheckMacValue"].is_string(),
+        "原始 payload 整包存進 raw"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn status_callback_returned_keeps_order_shipped_and_can_be_redelivered(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let id = shipped_cvs_order(&app, &pool, "DS260908CCCCL01", "10037").await;
+    let mut fields = status_fields(
+        "DS260908CCCCL01",
+        "10037",
+        "3018",
+        "到店尚未取貨，簡訊通知取件",
+    );
+    fields[6].1 = "FAMIC2C".to_string();
+    ecpay_post(&app, "/api/ecpay/logistics/status", fields).await;
+    assert_eq!(snapshot(&pool, id).await.0, "arrived");
+
+    ecpay_post(
+        &app,
+        "/api/ecpay/logistics/status",
+        status_fields("DS260908CCCCL01", "10037", "3020", "貨件未取退回物流中心"),
+    )
+    .await;
+    let (s, o, _, _, completed) = snapshot(&pool, id).await;
+    assert_eq!(
+        (s.as_str(), o.as_str(), completed),
+        ("returned", "shipped", false)
+    );
+
+    // 重新配達取件門市 → 回到 arrived
+    ecpay_post(
+        &app,
+        "/api/ecpay/logistics/status",
+        status_fields("DS260908CCCCL01", "10037", "2098", "包裹重新配達取件門市"),
+    )
+    .await;
+    assert_eq!(snapshot(&pool, id).await.0, "arrived");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn status_callback_unknown_code_only_records_and_falls_back_to_logistics_id(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let id = shipped_cvs_order(&app, &pool, "DS260908DDDDL01", "10038").await;
+
+    // 門市關轉店：不在對照表，只記代碼與訊息
+    let (status, text) = ecpay_post(
+        &app,
+        "/api/ecpay/logistics/status",
+        status_fields("DS260908DDDDL01", "10038", "2101", "門市關轉店"),
+    )
+    .await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+    let (s, _, code, msg, _) = snapshot(&pool, id).await;
+    assert_eq!(
+        (s.as_str(), code.as_deref(), msg.as_deref()),
+        ("created", Some("2101"), Some("門市關轉店"))
+    );
+
+    // MerchantTradeNo 對不上（例如綠界自己補的號）但 AllPayLogisticsID 對得上
+    let (status, text) = ecpay_post(
+        &app,
+        "/api/ecpay/logistics/status",
+        status_fields("SOMETHING_ELSE", "10038", "2030", "物流中心驗收成功"),
+    )
+    .await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+    assert_eq!(snapshot(&pool, id).await.0, "in_transit");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn store_update_records_message_without_changing_status(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let id = shipped_cvs_order(&app, &pool, "DS260908EEEEL01", "10039").await;
+    let fields = f(&[
+        ("MerchantID", "2000933"),
+        ("AllPayLogisticsID", "10039"),
+        ("GoodsName", "雞肉狗糧"),
+        ("GoodsAmount", "600"),
+        ("StoreType", "01"),
+        ("Status", "01"),
+        ("StoreID", "991182"),
+    ]);
+    let (status, text) =
+        ecpay_post(&app, "/api/ecpay/logistics/store-update", fields.clone()).await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+    let (s, o, _, msg, _) = snapshot(&pool, id).await;
+    assert_eq!((s.as_str(), o.as_str()), ("created", "shipped"));
+    assert_eq!(msg.as_deref(), Some("取件門市異動：門市關轉店（991182）"));
+    let raw: Value = sqlx::query_scalar("SELECT raw FROM shipments WHERE order_id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(raw["store_updates"].as_array().unwrap().len(), 1);
+
+    // 第二次追加、不覆蓋
+    ecpay_post(&app, "/api/ecpay/logistics/store-update", fields).await;
+    let raw: Value = sqlx::query_scalar("SELECT raw FROM shipments WHERE order_id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(raw["store_updates"].as_array().unwrap().len(), 2);
+
+    let mut bad = f(&[
+        ("MerchantID", "2000933"),
+        ("AllPayLogisticsID", "nope"),
+        ("StoreType", "01"),
+        ("Status", "01"),
+        ("StoreID", "1"),
+    ]);
+    let mac = mac::check_mac_value_md5(KEY, IV, &bad);
+    bad.push(("CheckMacValue".to_string(), mac));
+    let (status, text, _) = ecpay_post_raw(&app, "/api/ecpay/logistics/store-update", bad).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::OK, "0|Unknown AllPayLogisticsID")
+    );
+
+    let (status, text, _) = ecpay_post_raw(
+        &app,
+        "/api/ecpay/logistics/store-update",
+        f(&[("AllPayLogisticsID", "10039"), ("CheckMacValue", "bad")]),
+    )
+    .await;
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::BAD_REQUEST, "0|CheckMacValue Error")
+    );
 }
