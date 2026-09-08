@@ -325,6 +325,9 @@ async fn issue_invoice(state: &AppState, job: &Job) -> anyhow::Result<()> {
     match state.invoices.issue(&request).await {
         Ok(resp) if resp.is_ok() => {
             let invoice_date = time::parse_taipei(&resp.invoice_date, "%Y-%m-%d %H:%M:%S");
+            if invoice_date.is_none() {
+                tracing::warn!(%order_id, invoice_date = %resp.invoice_date, "InvoiceDate 格式不符，invoice_date 存 NULL");
+            }
             invoices::mark_issued(
                 &state.db,
                 order_id,
