@@ -341,8 +341,11 @@ async fn issue_invoice(state: &AppState, job: &Job) -> anyhow::Result<()> {
             if invoice_date.is_none() {
                 tracing::warn!(%order_id, invoice_date = %resp.invoice_date, "InvoiceDate 格式不符，invoice_date 存 NULL");
             }
-            invoices::mark_issued(
-                &state.db,
+            // 標記已開立與排通知信同一個交易（規格 §9）：分兩次提交的話，中間壞掉會留下
+            // 「已開立但沒有信」，重試又會走「已開立就略過」，通知信永遠不寄
+            let mut tx = state.db.begin().await?;
+            invoices::mark_issued_in_tx(
+                &mut tx,
                 order_id,
                 &resp.invoice_no,
                 invoice_date,
@@ -350,7 +353,6 @@ async fn issue_invoice(state: &AppState, job: &Job) -> anyhow::Result<()> {
                 &resp.raw,
             )
             .await?;
-            let mut tx = state.db.begin().await?;
             jobs::enqueue(
                 &mut tx,
                 KIND_SEND_EMAIL,

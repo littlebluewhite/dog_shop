@@ -6,10 +6,10 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use chrono::{DateTime, TimeZone, Utc};
-use dog_shop_api::domain::jobs;
 use dog_shop_api::domain::orders::{
     self, HomeAddress, InvoiceInput, OrderInput, OrderItemInput, Viewer,
 };
+use dog_shop_api::domain::{invoices, jobs};
 use dog_shop_api::ecpay::mac;
 use dog_shop_api::jobs::worker;
 use dog_shop_api::state::AppState;
@@ -269,6 +269,51 @@ async fn unpaid_or_cancelled_order_is_skipped(pool: PgPool) {
     assert_eq!(common::fake_invoices(&state).calls().len(), 0, "取消的不開");
     let jobs = job_rows(&pool, "issue_invoice").await;
     assert!(jobs.iter().all(|j| j.0 == "done"), "略過算完成：{jobs:?}");
+}
+
+/// 規格 §9：寫入業務資料與排 job 要在同一個交易，不然「已開立但通知信永遠不寄」
+#[sqlx::test(migrations = "./migrations")]
+async fn mark_issued_and_invoice_mail_roll_back_together(pool: PgPool) {
+    let (variant, _) = common::active_product(&pool, "A", 300, 5).await;
+    let created = orders::create_order(&pool, input(vec![(variant, 1)], personal_invoice()), None)
+        .await
+        .unwrap();
+    mark_paid(&pool, created.order_id).await;
+    let dedupe = format!("email:invoice_issued:{}", created.order_id);
+
+    // 標記已開立之後、排通知信之前壞掉（這裡用 rollback 模擬）
+    let mut tx = pool.begin().await.unwrap();
+    invoices::mark_issued_in_tx(
+        &mut tx,
+        created.order_id,
+        "AB12345678",
+        None,
+        "1234",
+        &json!({ "RtnCode": 1 }),
+    )
+    .await
+    .unwrap();
+    jobs::enqueue(
+        &mut tx,
+        jobs::KIND_SEND_EMAIL,
+        json!({ "template": "invoice_issued", "order_id": created.order_id }),
+        Some(&dedupe),
+    )
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+
+    assert_eq!(
+        invoice_row(&pool, created.order_id).await.0,
+        "pending",
+        "通知信沒排成就不能留下 issued（否則重試會走「已開立就略過」，信永遠不寄）"
+    );
+    let mails: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE dedupe_key = $1")
+        .bind(&dedupe)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(mails, 0);
 }
 
 /// 模擬綠界伺服器的 ReturnURL（同 tests/ecpay_payment.rs）

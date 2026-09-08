@@ -56,8 +56,10 @@ pub async fn record_request(
     Ok(())
 }
 
-pub async fn mark_issued(
-    db: &PgPool,
+/// 標記已開立。和「排 invoice_issued 通知信」必須在同一個交易裡（規格 §9 outbox）：
+/// 分兩次提交的話，中間壞掉會留下 issued 但沒有信，重試又會走「已開立就略過」，信永遠不寄
+pub async fn mark_issued_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
     order_id: Uuid,
     invoice_no: &str,
     invoice_date: Option<DateTime<Utc>>,
@@ -75,7 +77,7 @@ pub async fn mark_issued(
     .bind(invoice_date)
     .bind(random_number)
     .bind(response)
-    .execute(db)
+    .execute(&mut **tx)
     .await?;
     Ok(())
 }
