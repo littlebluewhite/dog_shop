@@ -6,7 +6,7 @@
 
 1. `docker compose -f deploy/docker-compose.dev.yml up -d db`
 2. 讓綠界打得到你的機器：`cloudflared tunnel --url http://localhost:5173`（沒有就 `brew install cloudflared`），記下它印出的 `https://xxxx.trycloudflare.com`。
-3. 根目錄 `.env`：`PUBLIC_BASE_URL=https://xxxx.trycloudflare.com`、`ECPAY_ENV=stage`（AIO／發票憑證留空會用公開測試憑證）。要看信件內容再設 `MAIL_LOG_BODY=1`（只在本機開發；內文含重設連結與訪客訂單網址）。
+3. 根目錄 `.env`：`PUBLIC_BASE_URL=https://xxxx.trycloudflare.com`、`ECPAY_ENV=stage`（AIO／發票憑證留空會用公開測試憑證）。要看信件內容再設 `MAIL_LOG_BODY=1`（只在本機開發；內文含重設連結與訪客訂單網址）。`ECPAY_LOGISTICS_*` 留空會用物流 C2C 公開測試特店 2000933。
 4. 啟動：`export PATH="$HOME/.cargo/bin:$PATH" && cargo run --manifest-path api/Cargo.toml`、`pnpm -C web dev`。Vite 會把 `/api` 轉到 :8080，所以 cloudflared 只要指到 :5173。
 
 ## 信用卡
@@ -49,6 +49,51 @@
 ## 重新付款
 
 訂單頁選付款方式按「前往付款」→ 綠界頁的 `MerchantTradeNo` 結尾從 `01` 變 `02`。
+
+## 超商取貨（物流）
+
+物流 C2C 測試特店 `2000933`；廠商後台 `https://vendor-stage.ecpay.com.tw`（`LogisticsC2CTest` / `test1234`）。測試環境的電子地圖是固定門市、不會跳地圖；**測試環境不會發物流狀態通知**（見第 6 點）。
+
+1. 結帳選「超商取貨」→ 選 7-ELEVEN → 按「選擇門市」→ 綠界直接把固定門市 POST 回 `/api/ecpay/logistics/map-reply` → 回到結帳頁看到門市（網址 `?store=<20 碼 token>`）。換一家超商會清掉門市要重選；超過 1 小時回來會看到「門市選擇已逾時」。同時確認真實瀏覽器的跨站 POST → 303 → GET 經 Vite proxy（正式環境是反向代理）正常回到結帳頁；e2e 只模擬了這一段。
+2. 用信用卡付款（同「信用卡」節）→ 訂單「已付款」。
+3. 後台 `/admin/settings` 填寄件人姓名（中文 5 字內）與手機（09 開頭 10 碼）；退貨門市可留空。
+4. `/admin/orders/<id>` 按「建立物流單」：
+   - 成功：狀態變「已出貨」，取貨區顯示「物流單已建立」、綠界物流單號、寄貨編號、驗證碼（7-11 才有）；api log `綠界物流單已建立`；Email log `【…】訂單 … 已出貨`；DB：`SELECT status, ecpay_merchant_trade_no, ecpay_logistics_id, cvs_payment_no, last_status_code, raw->'create_request'->>'GoodsAmount' FROM shipments`。廠商後台 → 物流管理 → 物流建單及查詢 看到同一張（`MerchantTradeNo` = 訂單編號 + `L01`）。
+   - 失敗：頁面 toast「綠界沒有接受這張物流單…」，出貨區「上次建立物流單失敗：<綠界原文>」，訂單維持已付款；再按一次會用 `L02`。
+   - 待確認（實作時無法自動驗證）：(a) 真實回應能通過 MD5 CheckMacValue 驗證（失敗時出貨區會顯示「回應簽章不符：…」；先到廠商後台確認是否已建單，再回報）；(b) `GoodsAmount` 用商品小計、`ReceiverEmail`、`LogisticsC2CReplyURL` 三個欄位被三家超商接受；(c) 全家、萊爾富回的 `CVSPaymentNo` 形狀（測試門市 全家 `006598`、萊爾富 `2001`）。
+5. 「列印託運單」→ 新分頁出現綠界的託運單頁（7-11 `PrintUniMartC2COrderInfo`）。新分頁是在 API 回應之後才開，Safari 可能當成彈出視窗擋掉：被擋就在 Safari 允許本站彈出視窗，或改用 Chrome。
+6. 狀態通知：stage 不會發，用下面的 python 算簽章、curl 打本機（`RtnCode` 換 `2030`／`2073`／`2067` 各打一次，看訂單頁出貨狀態變「運送中」→「已到門市」→「已取件」且訂單變「已完成」；`2074` 看「未取退回」與列表標紅）：
+
+   ```python
+   import hashlib, subprocess
+   from urllib.parse import quote_plus
+   key, iv = "XBERn1YOvpM9nfZc", "h1ONHk4P4yqbl5LK"
+   p = {"MerchantID": "2000933", "MerchantTradeNo": "DS260908ABCDL01", "RtnCode": "2030", "RtnMsg": "物流中心驗收成功",
+        "AllPayLogisticsID": "10035", "LogisticsType": "CVS", "LogisticsSubType": "UNIMARTC2C", "GoodsAmount": "600",
+        "UpdateStatusDate": "2026/09/10 18:30:00", "ReceiverName": "王小明", "ReceiverCellPhone": "0912345678"}
+   raw = f"HashKey={key}&" + "&".join(f"{k}={v}" for k, v in sorted(p.items(), key=lambda kv: kv[0].lower())) + f"&HashIV={iv}"
+   enc = quote_plus(raw, safe="").lower()
+   for a, b in [("%2d", "-"), ("%5f", "_"), ("%2e", "."), ("%21", "!"), ("%2a", "*"), ("%28", "("), ("%29", ")")]:
+       enc = enc.replace(a, b)
+   p["CheckMacValue"] = hashlib.md5(enc.encode()).hexdigest().upper()
+   subprocess.run(["curl", "-s", "-d", "&".join(f"{k}={quote_plus(v)}" for k, v in p.items()), "http://localhost:8080/api/ecpay/logistics/status"])
+   ```
+
+   `MerchantTradeNo` 改成你那筆的 `ecpay_merchant_trade_no`。回 `1|OK`；簽章錯回 400 `0|CheckMacValue Error`；找不到單回 `0|Unknown MerchantTradeNo`。
+7. 宅配：另下一筆宅配訂單付款後，`/admin/orders/<id>` 填貨運公司與單號 → 「已出貨」、Email log 有貨運公司與單號。
+8. 取消／退款／發票：待付款的訂單按「取消訂單」→ 已取消、庫存回來、付款嘗試「已作廢」；已付款的按「標記已退款」→ 已退款、庫存回來（已出貨的不回）；`UPDATE invoices SET status='failed', error='test' WHERE order_id=…` 後訂單頁出現紅字與「重開發票」，按下去幾秒後變已開立；`UPDATE orders SET needs_refund=true …` 後儀表板「需退款」有它，訂單頁「已處理退款」清掉。
+
+## 舊訂單沒有 invoices 列
+
+`0003_invoices.sql` 之前建立的開發用訂單沒有 `invoices` 列，重新付款成功後 `issue_invoice` 會直接失敗（不會誤打綠界）。要補的話：
+
+```sql
+INSERT INTO invoices (id, order_id, relate_number)
+SELECT gen_random_uuid(), o.id, o.order_no FROM orders o
+WHERE NOT EXISTS (SELECT 1 FROM invoices i WHERE i.order_id = o.id);
+```
+
+（只在開發資料庫用；正式環境從 0003 之後才會有訂單。）
 
 ## 忘記密碼
 
