@@ -65,6 +65,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["serde", "v4", "v7"] }
 
 [dev-dependencies]
-http-body-util = "0.1"
+http-body-util = { version = "0.1", features = ["channel"] }
 rust_xlsxwriter = "0.99.0"
 tempfile = "3.27.0"

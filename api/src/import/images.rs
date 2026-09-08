@@ -71,9 +71,12 @@ impl ImageFetcher {
             .trim()
             .to_ascii_lowercase();
         if !content_type.starts_with("image/") {
-            return Err(FetchError::NotImage(
-                content_type.chars().take(60).collect(),
-            ));
+            let label = if content_type.is_empty() {
+                "未標示".to_string()
+            } else {
+                content_type.chars().take(60).collect()
+            };
+            return Err(FetchError::NotImage(label));
         }
         if resp
             .content_length()
@@ -152,7 +155,7 @@ mod tests {
     use super::*;
     use axum::{
         Router,
-        body::Bytes,
+        body::{Body, Bytes},
         http::{HeaderValue, StatusCode, header},
         response::IntoResponse,
         routing::get,
@@ -168,8 +171,9 @@ mod tests {
         out.into_inner()
     }
 
-    /// 假圖床：/ok.png 真圖、/html 文字、/big 與 /big-no-length 都是超過 10 MB 的假圖、
-    /// /500 伺服器錯、/redirect → /ok.png
+    /// 假圖床：/ok.png 真圖、/html 文字、/big 是超過 10 MB 的假圖（有 Content-Length）、
+    /// /big-no-length 是真的沒有 Content-Length 的 chunked 回應（超過 10 MB）、/no-type 完全
+    /// 沒有 Content-Type header、/500 伺服器錯、/redirect → /ok.png
     async fn serve() -> SocketAddr {
         async fn ok() -> impl IntoResponse {
             (
@@ -185,27 +189,58 @@ mod tests {
         }
         async fn big() -> impl IntoResponse {
             // 簡報原本是「宣告 Content-Length: 20 MB、實際只送 1 KB」，靠假的 header 讓
-            // fetch() 不用真的下載就擋下。但這種宣告與實際不符的 body 沒辦法在真的
-            // hyper／reqwest 之間重現：body 長度對 hyper 已知時，debug build 會斷言宣告值要
-            // 跟已知長度一致（不一致就在 per-connection task 裡 panic、連線直接斷掉）；改成
-            // 長度對 hyper「未知」的 body（例如用 http-body-util 的 Channel）雖然不會踩到
-            // assert，但 hyper／reqwest 會把「body 送到一半、實際位元組數遠少於宣告值就斷線」
-            // 判定成連線不完整（hyper::Error(IncompleteMessage)），一樣連 Response 都拿不到
-            // ——兩條路 fetch() 最後都只會看到連線失敗，測不到 TooLarge。這裡改成 body 真的
-            // 超過 10 MB（跟 /big-no-length 一樣的大小，Content-Length 由 axum 依實際大小
-            // 自動填，不是宣告不實的假數字），一樣能驗證 fetch() 是靠 header 就提早擋下、
-            // 不用等把整包 body 讀完。與簡報的差異只在這個測試假伺服器的 fixture 寫法，
-            // 不影響 images.rs 的正式邏輯。
+            // fetch() 不用真的下載就擋下。但宣告值跟實際位元組數不符的 body，不管長度對
+            // hyper 是已知還未知，都沒辦法在真的 hyper／reqwest 之間重現：已知長度時，
+            // debug build 會斷言宣告值要跟已知長度一致（不一致就在 per-connection task 裡
+            // panic、連線直接斷掉）；改成未知長度（例如下面 /big-no-length 用的
+            // http-body-util Channel）雖然不會踩到那個 assert，但 hyper 端會照樣信任
+            // 手動設的 Content-Length header 去寫、body 卻只送 1 KB 就結束，等於「宣告
+            // 20 MB、實際只給 1 KB 就斷線」，一樣會被判定連線不完整
+            // （hyper::Error(IncompleteMessage)），連 Response 都拿不到。真正的關鍵是
+            // 「宣告值遠大於實際送出量」這件事本身，不是 Channel 能不能用——Channel 沒問題，
+            // /big-no-length 就是用它、而且是真的沒有 Content-Length 的 chunked 回應。這裡
+            // 改成 body 真的超過 10 MB（跟 /big-no-length 一樣的大小，Content-Length 由
+            // axum 依實際大小自動填，不是宣告不實的假數字），一樣能驗證 fetch() 是靠 header
+            // 就提早擋下、不用等把整包 body 讀完。與簡報的差異只在這個測試假伺服器的
+            // fixture 寫法，不影響 images.rs 的正式邏輯。
             (
                 [(header::CONTENT_TYPE, HeaderValue::from_static("image/png"))],
                 Bytes::from(vec![0u8; MAX_IMAGE_BYTES + 1]),
             )
         }
         async fn big_no_length() -> impl IntoResponse {
+            // 跟 /big 不同：這裡完全不設 Content-Length，body 用 http-body-util 的 Channel
+            // 邊生邊送（64 KB 一個 chunk，最多 200 個，合計 12.5 MB，超過 10 MB 上限）。
+            // Channel 沒有覆寫 size_hint，對 hyper 來說 body 長度是「未知」，所以會用
+            // Transfer-Encoding: chunked，不帶 Content-Length；fetch() 的預檢
+            // （resp.content_length()）過不了這關就會放行，一路進迴圈邊讀邊累加，才會真的
+            // 測到「累加超過 MAX_IMAGE_BYTES 就回 TooLarge」那個分支。在 handler 裡直接
+            // await 把 200 個 chunk 都送完會卡住（buffer 只有 16、沒有人先消費），所以用
+            // tokio::spawn 讓 body 用背景工作邊送，handler 先把 response 回傳給 hyper 讓它
+            // 開始邊收邊寫給客戶端；client（fetch()）超過 10 MB 提早斷線後，背景工作的
+            // send_data 會失敗，用 break 收掉、不 unwrap／panic。
+            let (mut tx, body) =
+                http_body_util::channel::Channel::<Bytes, std::convert::Infallible>::new(16);
+            tokio::spawn(async move {
+                let chunk = Bytes::from(vec![0u8; 64 * 1024]);
+                for _ in 0..200 {
+                    if tx.send_data(chunk.clone()).await.is_err() {
+                        break;
+                    }
+                }
+            });
             (
                 [(header::CONTENT_TYPE, HeaderValue::from_static("image/png"))],
-                Bytes::from(vec![0u8; MAX_IMAGE_BYTES + 1]),
+                Body::new(body),
             )
+        }
+        async fn no_type() -> impl IntoResponse {
+            // 完全不設 Content-Type：用 http::Response::builder() 直接組，不透過
+            // `impl IntoResponse for Bytes`（那個會自動補 application/octet-stream）。
+            axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::from(Bytes::from_static(b"\x01\x02\x03")))
+                .unwrap()
         }
         async fn fail() -> impl IntoResponse {
             (StatusCode::INTERNAL_SERVER_ERROR, "boom")
@@ -227,6 +262,7 @@ mod tests {
             .route("/html", get(html))
             .route("/big", get(big))
             .route("/big-no-length", get(big_no_length))
+            .route("/no-type", get(no_type))
             .route("/500", get(fail))
             .route("/redirect", get(redirect))
             .route("/corrupt", get(corrupt));
@@ -288,6 +324,12 @@ mod tests {
                 .await
                 .unwrap_err(),
             FetchError::TooLarge
+        );
+        assert_eq!(
+            fetch_and_store(&fetcher, dir.path(), &format!("{base}/no-type"))
+                .await
+                .unwrap_err(),
+            FetchError::NotImage("未標示".into())
         );
         assert_eq!(
             fetch_and_store(&fetcher, dir.path(), &format!("{base}/500"))
