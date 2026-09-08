@@ -1,5 +1,5 @@
 use dog_shop_api::import::{ImportError, parse_xlsx};
-use rust_xlsxwriter::Workbook;
+use rust_xlsxwriter::{Format, Workbook};
 
 fn sheet(rows: &[&[&str]]) -> Vec<u8> {
     let mut wb = Workbook::new();
@@ -40,4 +40,29 @@ fn garbage_is_unreadable() {
         Err(ImportError::Unreadable)
     ));
     assert!(matches!(parse_xlsx(b""), Err(ImportError::Unreadable)));
+}
+
+#[test]
+fn formatted_empty_tail_rows_do_not_count() {
+    let mut wb = Workbook::new();
+    let ws = wb.add_worksheet();
+    let rows: &[&[&str]] = &[
+        &["商品編號", "商品名稱", "價格", "庫存", "圖片網址"],
+        &["A1", "狗糧", "1200", "10", ""],
+        &["B2", "玩具", "99", "", ""],
+    ];
+    for (r, row) in rows.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate() {
+            if let Ok(n) = cell.parse::<f64>() {
+                ws.write_number(r as u32, c as u16, n).unwrap();
+            } else {
+                ws.write_string(r as u32, c as u16, *cell).unwrap();
+            }
+        }
+    }
+    ws.write_blank(6000, 0, &Format::new().set_bold()).unwrap();
+    let bytes = wb.save_to_buffer().unwrap();
+    let p = parse_xlsx(&bytes).unwrap();
+    assert_eq!(p.row_count, 2);
+    assert_eq!(p.products.len(), 2);
 }

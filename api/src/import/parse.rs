@@ -113,18 +113,24 @@ fn opt(s: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
-/// 「1,200」「NT$1,200」「1200元」「３５０」「99.0」「1,200.00」→ 1200／1200／1200／350／99／1200；
-/// 「1.5」「-1」「abc」「12a3」→ None
+/// 「1,200」「NT$1,200」「1200元」「３５０」「99.0」「1,200.00」「ＮＴ＄1200」→ 1200／1200／1200／350／99／1200／1200；
+/// 「1.5」「-1」「abc」「12a3」「1t2」→ None
 fn parse_amount(raw: &str) -> Option<i64> {
+    let t = raw.trim();
+    let t = ["NT$", "nt$", "Nt$", "NT＄", "ＮＴ＄", "$", "＄"]
+        .iter()
+        .find_map(|p| t.strip_prefix(p))
+        .unwrap_or(t);
+    let t = t.strip_suffix('元').unwrap_or(t);
     let mut s = String::new();
-    for c in raw.chars() {
+    for c in t.chars() {
         match c {
             '0'..='9' | '.' => s.push(c),
             '\u{FF10}'..='\u{FF19}' => s.push(char::from_u32(c as u32 - 0xFF10 + '0' as u32)?),
             '．' => s.push('.'),
             '-' | '－' => return None,
             c if c.is_whitespace() => {}
-            ',' | '，' | '$' | '＄' | 'N' | 'T' | 'n' | 't' | '元' => {}
+            ',' | '，' => {}
             _ => return None,
         }
     }
@@ -164,11 +170,15 @@ impl Row<'_> {
     fn is_blank(&self) -> bool {
         self.cells.iter().all(|c| blank(c))
     }
-    fn image_urls(&self) -> Vec<String> {
-        let mut urls = split_urls(self.get(Column::ImageUrls));
+    /// 每個網址標記來源欄（「圖片網址」或「商品圖片N」），壞網址的錯誤才能指到正確欄位
+    fn image_urls(&self) -> Vec<(Column, String)> {
+        let mut urls: Vec<(Column, String)> = split_urls(self.get(Column::ImageUrls))
+            .into_iter()
+            .map(|u| (Column::ImageUrls, u))
+            .collect();
         for n in 1..=9u8 {
             if let Some(u) = opt(self.get(Column::Image(n))) {
-                urls.push(u);
+                urls.push((Column::Image(n), u));
             }
         }
         urls
@@ -190,7 +200,11 @@ pub fn parse_grid(sheet: &str, grid: &[Vec<String>]) -> Result<ParsedImport, Imp
         return Err(ImportError::MissingColumns(missing.join("、")));
     }
     let data_rows = &grid[header_idx + 1..];
-    if data_rows.len() > MAX_ROWS {
+    let non_blank = data_rows
+        .iter()
+        .filter(|r| !r.iter().all(|c| blank(c)))
+        .count();
+    if non_blank > MAX_ROWS {
         return Err(ImportError::TooManyRows(MAX_ROWS));
     }
 
@@ -209,19 +223,18 @@ pub fn parse_grid(sheet: &str, grid: &[Vec<String>]) -> Result<ParsedImport, Imp
         if row.is_blank() {
             continue;
         }
-        out.row_count += 1;
         let external_ref = row.get(Column::ExternalRef).trim().to_string();
         let target: Option<usize> = if !external_ref.is_empty() {
-            if external_ref.chars().count() > 100 {
-                out.errors.push(RowError {
-                    row: row_no,
-                    column: Some(Column::ExternalRef.label()),
-                    message: "商品編號最多 100 字".into(),
-                });
-            }
             match index.get(&external_ref) {
                 Some(&i) => Some(i),
                 None => {
+                    if external_ref.chars().count() > 100 {
+                        out.errors.push(RowError {
+                            row: row_no,
+                            column: Some(Column::ExternalRef.label()),
+                            message: "商品編號最多 100 字".into(),
+                        });
+                    }
                     let name = row.get(Column::Name).trim().to_string();
                     if name.is_empty() {
                         out.errors.push(RowError {
@@ -237,11 +250,11 @@ pub fn parse_grid(sheet: &str, grid: &[Vec<String>]) -> Result<ParsedImport, Imp
                         });
                     }
                     let image_urls = row.image_urls();
-                    for u in &image_urls {
+                    for (col, u) in &image_urls {
                         if !(u.starts_with("http://") || u.starts_with("https://")) {
                             out.errors.push(RowError {
                                 row: row_no,
-                                column: Some(Column::ImageUrls.label()),
+                                column: Some(col.label()),
                                 message: format!("不是 http(s) 網址：{u}"),
                             });
                         }
@@ -261,7 +274,7 @@ pub fn parse_grid(sheet: &str, grid: &[Vec<String>]) -> Result<ParsedImport, Imp
                         category: opt(row.get(Column::Category)),
                         option1_name: opt(row.get(Column::Option1Name)),
                         option2_name: opt(row.get(Column::Option2Name)),
-                        image_urls,
+                        image_urls: image_urls.into_iter().map(|(_, u)| u).collect(),
                         variants: Vec::new(),
                     });
                     let i = out.products.len() - 1;
@@ -269,6 +282,14 @@ pub fn parse_grid(sheet: &str, grid: &[Vec<String>]) -> Result<ParsedImport, Imp
                     Some(i)
                 }
             }
+        } else if !blank(row.get(Column::Name)) {
+            out.errors.push(RowError {
+                row: row_no,
+                column: Some(Column::ExternalRef.label()),
+                message: "這一列有商品名稱但沒有商品編號".into(),
+            });
+            out.row_count += 1;
+            continue;
         } else {
             let has_variant_data = !blank(row.get(Column::Option1Value))
                 || !blank(row.get(Column::Option2Value))
@@ -284,11 +305,13 @@ pub fn parse_grid(sheet: &str, grid: &[Vec<String>]) -> Result<ParsedImport, Imp
                         column: Some(Column::ExternalRef.label()),
                         message: "這一列沒有商品編號，也接不到上一個商品".into(),
                     });
+                    out.row_count += 1;
                     None
                 }
             }
         };
         let Some(i) = target else { continue };
+        out.row_count += 1;
         last = Some(i);
 
         // 規格
@@ -389,18 +412,37 @@ pub fn parse_grid(sheet: &str, grid: &[Vec<String>]) -> Result<ParsedImport, Imp
                 message: "有規格名稱時每一列都要填規格選項1".into(),
             });
         }
+        if p.option1_name.is_none() && p.variants.iter().any(|v| v.option1_value.is_some()) {
+            let r = p
+                .variants
+                .iter()
+                .find(|v| v.option1_value.is_some())
+                .map(|v| v.row)
+                .unwrap_or(p.first_row);
+            out.errors.push(RowError {
+                row: r,
+                column: Some(Column::Option1Value.label()),
+                message: "有規格選項1 就要填規格名稱1".into(),
+            });
+        }
+        if p.option2_name.is_none() && p.variants.iter().any(|v| v.option2_value.is_some()) {
+            let r = p
+                .variants
+                .iter()
+                .find(|v| v.option2_value.is_some())
+                .map(|v| v.row)
+                .unwrap_or(p.first_row);
+            out.errors.push(RowError {
+                row: r,
+                column: Some(Column::Option2Value.label()),
+                message: "有規格選項2 就要填規格名稱2".into(),
+            });
+        }
         if p.variants.len() > MAX_VARIANTS {
             out.errors.push(RowError {
                 row: p.first_row,
                 column: None,
                 message: format!("規格最多 {MAX_VARIANTS} 個"),
-            });
-        }
-        if p.variants.is_empty() {
-            out.errors.push(RowError {
-                row: p.first_row,
-                column: Some(Column::Price.label()),
-                message: "至少要有一列規格（價格）".into(),
             });
         }
     }
@@ -503,7 +545,7 @@ mod tests {
         // 孤兒列要放在任何商品之前，否則會被接到前一個商品（那是刻意的行為，見第一個測試）
         let g = grid(&[
             HEADER,
-            &["", "孤兒列", "", "", "", "紅", "", "", "50", "", "", ""],
+            &["", "", "", "", "", "紅", "", "", "50", "", "", ""],
             &["A1", "", "", "", "", "", "", "", "100", "", "", ""],
             &[
                 "C3",
@@ -536,6 +578,20 @@ mod tests {
             ],
             &["D4", "", "", "", "", "藍", "", "", "60", "", "", ""],
             &["E5", "太貴", "", "", "", "", "", "", "10000000", "", "", ""],
+            &[
+                "",
+                "漏編號的新商品",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "70",
+                "",
+                "",
+                "",
+            ],
         ]);
         let p = parse_grid("s", &g).unwrap();
         let msgs: Vec<(u32, Option<String>, String)> = p
@@ -577,6 +633,14 @@ mod tests {
         );
         assert!(
             msgs.contains(&(
+                6,
+                Some("規格選項1".into()),
+                "有規格選項1 就要填規格名稱1".into()
+            )),
+            "{msgs:?}"
+        );
+        assert!(
+            msgs.contains(&(
                 7,
                 Some("規格名稱1".into()),
                 "沒有規格名稱時只能有一列".into()
@@ -587,8 +651,21 @@ mod tests {
             msgs.contains(&(8, Some("價格".into()), "價格最多 9,999,999".into())),
             "{msgs:?}"
         );
+        assert!(
+            msgs.contains(&(
+                9,
+                Some("商品編號".into()),
+                "這一列有商品名稱但沒有商品編號".into()
+            )),
+            "{msgs:?}"
+        );
         // 有錯的商品仍會出現在 products（預覽要列出來），但錯誤數 > 0 就不能 commit；孤兒列不是商品
         assert_eq!(p.products.len(), 4);
+        assert_eq!(
+            p.products.last().unwrap().variants.len(),
+            1,
+            "第 9 列沒被掛到 E5"
+        );
     }
 
     #[test]
@@ -628,10 +705,19 @@ mod tests {
                 "無",
             ],
             &["S1", "", "", "M", "350", "5", "", "", ""],
+            &["S2", "壞圖", "", "", "350", "1", "", "not-a-url", ""],
         ]);
         let p = parse_grid("s", &g).unwrap();
-        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(
+            p.errors,
+            vec![RowError {
+                row: 4,
+                column: Some("商品圖片2".into()),
+                message: "不是 http(s) 網址：not-a-url".into(),
+            }]
+        );
         assert_eq!(p.unmatched_columns, vec!["品牌".to_string()]);
+        assert_eq!(p.products.len(), 2);
         let s = &p.products[0];
         assert_eq!(s.image_urls, vec!["https://a/1.jpg", "https://a/2.jpg"]);
         assert_eq!(s.variants[0].price, 350, "全形數字也要能讀");
@@ -686,5 +772,7 @@ mod tests {
         assert_eq!(parse_amount("abc"), None);
         assert_eq!(parse_amount(""), None);
         assert_eq!(parse_amount("12a3"), None);
+        assert_eq!(parse_amount("ＮＴ＄1200"), Some(1200));
+        assert_eq!(parse_amount("1t2"), None);
     }
 }

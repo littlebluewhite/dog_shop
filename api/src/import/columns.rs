@@ -91,13 +91,11 @@ const ALIASES: &[(&str, Column)] = &[
     ("規格1名稱", Column::Option1Name),
     ("選項名稱1", Column::Option1Name),
     ("規格選項1", Column::Option1Value),
-    ("規格1", Column::Option1Value),
     ("選項1", Column::Option1Value),
     ("規格名稱2", Column::Option2Name),
     ("規格2名稱", Column::Option2Name),
     ("選項名稱2", Column::Option2Name),
     ("規格選項2", Column::Option2Value),
-    ("規格2", Column::Option2Value),
     ("選項2", Column::Option2Value),
     ("價格", Column::Price),
     ("售價", Column::Price),
@@ -112,6 +110,7 @@ const ALIASES: &[(&str, Column)] = &[
     ("圖片網址", Column::ImageUrls),
     ("圖片", Column::ImageUrls),
     ("商品圖片", Column::ImageUrls),
+    ("主圖", Column::Image(1)),
 ];
 
 pub fn match_header(raw: &str) -> Option<Column> {
@@ -208,12 +207,14 @@ mod tests {
             ("商品圖片 1", Column::Image(1)),
             ("商品圖片9", Column::Image(9)),
             ("圖片3", Column::Image(3)),
+            ("主圖", Column::Image(1)),
         ] {
             assert_eq!(match_header(h), Some(c), "{h}");
         }
         assert_eq!(match_header("商品圖片 10"), None);
         assert_eq!(match_header("品牌"), None);
         assert_eq!(match_header(""), None);
+        assert_eq!(match_header("規格1"), None);
     }
 
     #[test]
@@ -244,5 +245,12 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert!(!is_header_row(&not));
+    }
+
+    #[test]
+    fn every_template_header_matches() {
+        for h in TEMPLATE_HEADERS {
+            assert!(match_header(h).is_some(), "{h}");
+        }
     }
 }
