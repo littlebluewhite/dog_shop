@@ -67,3 +67,4 @@ uuid = { version = "1", features = ["serde", "v4", "v7"] }
 [dev-dependencies]
 http-body-util = "0.1"
 rust_xlsxwriter = "0.99.0"
+tempfile = "3.27.0"
