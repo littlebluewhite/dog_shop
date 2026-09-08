@@ -86,8 +86,12 @@ test('瀏覽 → 加入購物車 → 結帳（宅配）→ 送往綠界的表單
 	await expect(page.getByText(product.name)).toBeVisible();
 	await expect(page.getByText('重慶南路一段 122 號')).toBeVisible();
 
-	// 取消 → 狀態變已取消
-	await page.getByRole('button', { name: '取消訂單' }).click();
+	// 取消 → 狀態變已取消。這裡也是整頁導覽（ClientBackURL）過來，「取消訂單」按鈕 SSR 就存在，
+	// click 可能搶在 hydration 掛上 onclick 之前（冷的 vite dev 每次都會發生）；重試直到確認按鈕出現
+	await expect(async () => {
+		await page.getByRole('button', { name: '取消訂單' }).click();
+		await expect(page.getByRole('button', { name: '確定取消這筆訂單' })).toBeVisible({ timeout: 2_000 });
+	}).toPass({ timeout: 15_000 });
 	await page.getByRole('button', { name: '確定取消這筆訂單' }).click();
 	await expect(page.getByText('已取消', { exact: false }).first()).toBeVisible();
 });
