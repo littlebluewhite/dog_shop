@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .merge(routes::me::router())
         .merge(routes::categories::router())
         .merge(routes::admin_products::router())
+        .merge(routes::admin_import::router())
         .merge(routes::products::router())
         .merge(routes::cart::router())
         .merge(routes::checkout::router())

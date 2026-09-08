@@ -47,7 +47,7 @@ pub struct ImportProduct {
 pub struct ParsedImport {
     pub sheet: String,
     pub header_row: u32,
-    /// 標題列之後、非整列空白的列數
+    /// 標題列之後、真的處理到的列數（建立商品、掛規格或報錯的列；被跳過的列不算）
     pub row_count: u32,
     pub products: Vec<ImportProduct>,
     pub errors: Vec<RowError>,

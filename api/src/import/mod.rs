@@ -10,8 +10,7 @@ pub const MAX_XLSX_BYTES: usize = 5 * 1024 * 1024;
 /// 資料列上限（標題列之後）
 pub const MAX_ROWS: usize = 5000;
 
-// Task 4 再打開
-// pub use apply::{ImportResult, ImportWarning, ImportedProduct, apply};
+pub use apply::{ImportResult, ImportWarning, ImportedProduct, apply};
 pub use images::{FetchError, ImageFetcher, fetch_all, fetch_and_store};
 pub use parse::{
     ImportError, ImportProduct, ImportVariant, ParsedImport, RowError, parse_grid, parse_xlsx,

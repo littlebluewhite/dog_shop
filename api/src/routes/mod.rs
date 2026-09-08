@@ -1,3 +1,4 @@
+pub mod admin_import;
 pub mod admin_orders;
 pub mod admin_products;
 pub mod admin_settings;
