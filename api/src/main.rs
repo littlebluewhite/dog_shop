@@ -1,12 +1,14 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
-use dog_shop_api::{app, config::Config, jobs, mail, state::AppState};
+use dog_shop_api::{app, config::Config, ecpay, jobs, mail, state::AppState};
 use dog_shop_api::{cli, db};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // reqwest 用 rustls-no-provider，整個行程要先裝好 crypto provider（與規格不同之處 32）；重複安裝會回 Err，忽略
+    let _ = rustls::crypto::ring::default_provider().install_default();
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .json()
@@ -35,10 +37,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let mailer = Arc::new(mail::Mailer::from_config(&config)?);
+    let invoices = Arc::new(ecpay::invoice::InvoiceGateway::ecpay(&config.ecpay)?);
     let state = AppState {
         db,
         config: config.clone(),
         mailer,
+        invoices,
     };
     // 背景工作：jobs worker 與排程掃描（規格 §9），和 api 同一個行程、同一個連線池
     jobs::start(state.clone());

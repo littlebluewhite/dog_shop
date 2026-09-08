@@ -1,18 +1,22 @@
 //! job 種類對應的執行函式：send_email（本任務）、issue_invoice（Task 10）
 use anyhow::Context;
-use serde_json::Value;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
     auth::tokens::sha256_hex,
     domain::{
-        jobs::{KIND_ISSUE_INVOICE, KIND_SEND_EMAIL},
-        orders::{self, OrderDetail, PAYMENT_ATM, PAYMENT_CREDIT, PAYMENT_CVS_CODE, SHIPPING_CVS},
+        invoices,
+        jobs::{self, KIND_ISSUE_INVOICE, KIND_SEND_EMAIL},
+        orders::{
+            self, OrderDetail, PAYMENT_ATM, PAYMENT_CREDIT, PAYMENT_CVS_CODE, SHIPPING_CVS,
+            STATUS_COMPLETED, STATUS_PAID, STATUS_SHIPPED,
+        },
         password_resets, payments,
         settings::{self, ShopSettings},
         users,
     },
-    ecpay::time,
+    ecpay::{invoice, time},
     jobs::worker::Job,
     mail::{
         Email,
@@ -27,7 +31,7 @@ pub const RESET_THROTTLE_MINUTES: i32 = 10;
 pub async fn run(state: &AppState, job: &Job) -> anyhow::Result<()> {
     match job.kind.as_str() {
         KIND_SEND_EMAIL => send_email(state, &job.payload).await,
-        KIND_ISSUE_INVOICE => anyhow::bail!("issue_invoice handler 尚未實作（Task 10）"),
+        KIND_ISSUE_INVOICE => issue_invoice(state, job).await,
         other => anyhow::bail!("未知的 job kind：{other}"),
     }
 }
@@ -291,4 +295,74 @@ async fn send_password_reset(
         return Err(e);
     }
     Ok(())
+}
+
+/// 開立電子發票（規格 §8.4、與規格不同之處 29）。已開立就略過；訂單不是已付款狀態也略過（done）。
+/// 綠界回錯或連不上 → 記在 invoices.error 並回 Err 讓 worker 重試；最後一次失敗把 invoices 標 failed
+async fn issue_invoice(state: &AppState, job: &Job) -> anyhow::Result<()> {
+    let order_id = payload_uuid(&job.payload, "order_id")?;
+    let Some(detail) = orders::get_detail(&state.db, order_id).await? else {
+        tracing::warn!(%order_id, "訂單不存在，略過開發票");
+        return Ok(());
+    };
+    let Some(invoice) = detail.invoice.as_ref() else {
+        anyhow::bail!("訂單 {order_id} 沒有 invoices 列");
+    };
+    if invoice.status == invoices::STATUS_ISSUED {
+        tracing::info!(%order_id, "發票已開立，略過");
+        return Ok(());
+    }
+    if !matches!(
+        detail.order.status.as_str(),
+        STATUS_PAID | STATUS_SHIPPED | STATUS_COMPLETED
+    ) {
+        tracing::warn!(%order_id, status = %detail.order.status, "訂單不是已付款狀態，不開發票");
+        return Ok(());
+    }
+
+    let request = invoice::build_issue_request(state.invoices.merchant_id(), &detail);
+    invoices::record_request(&state.db, order_id, &serde_json::to_value(&request)?).await?;
+    match state.invoices.issue(&request).await {
+        Ok(resp) if resp.is_ok() => {
+            let invoice_date = time::parse_taipei(&resp.invoice_date, "%Y-%m-%d %H:%M:%S");
+            invoices::mark_issued(
+                &state.db,
+                order_id,
+                &resp.invoice_no,
+                invoice_date,
+                &resp.random_number,
+                &resp.raw,
+            )
+            .await?;
+            let mut tx = state.db.begin().await?;
+            jobs::enqueue(
+                &mut tx,
+                KIND_SEND_EMAIL,
+                json!({ "template": "invoice_issued", "order_id": order_id }),
+                Some(&format!("email:invoice_issued:{order_id}")),
+            )
+            .await?;
+            tx.commit().await?;
+            tracing::info!(%order_id, invoice_no = %resp.invoice_no, "發票開立成功");
+            Ok(())
+        }
+        Ok(resp) => {
+            let msg = format!("綠界 RtnCode {}：{}", resp.rtn_code, resp.rtn_msg);
+            invoices::record_failure(
+                &state.db,
+                order_id,
+                Some(&resp.raw),
+                &msg,
+                job.is_last_attempt(),
+            )
+            .await?;
+            anyhow::bail!("{msg}")
+        }
+        Err(e) => {
+            let msg = format!("{e:#}");
+            invoices::record_failure(&state.db, order_id, None, &msg, job.is_last_attempt())
+                .await?;
+            Err(e)
+        }
+    }
 }

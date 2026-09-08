@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
-use crate::{config::Config, mail::Mailer};
+use crate::{config::Config, ecpay::invoice::InvoiceGateway, mail::Mailer};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -10,4 +10,6 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// Email 出口（SMTP／只記 log／測試擷取）
     pub mailer: Arc<Mailer>,
+    /// 電子發票出口（綠界／測試 Fake）
+    pub invoices: Arc<InvoiceGateway>,
 }

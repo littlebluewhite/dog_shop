@@ -10,6 +10,7 @@ use axum::{
 use dog_shop_api::{
     app,
     config::Config,
+    ecpay::invoice::{FakeInvoiceGateway, InvoiceGateway},
     mail::{Email, Mailer},
     state::AppState,
 };
@@ -29,6 +30,7 @@ pub fn state(pool: PgPool) -> AppState {
         db: pool,
         config: Arc::new(Config::for_tests(upload_dir)),
         mailer: Arc::new(mailer),
+        invoices: Arc::new(InvoiceGateway::Fake(FakeInvoiceGateway::default())),
     }
 }
 
@@ -212,4 +214,12 @@ pub async fn cvs_store_token(pool: &PgPool) -> String {
     .await
     .unwrap();
     token
+}
+
+/// 測試裡的假發票閘道（看 calls()、設定下一次失敗）
+pub fn fake_invoices(state: &AppState) -> &FakeInvoiceGateway {
+    match &*state.invoices {
+        InvoiceGateway::Fake(fake) => fake,
+        InvoiceGateway::Ecpay(_) => panic!("測試的 AppState 要用 InvoiceGateway::Fake"),
+    }
 }
