@@ -174,6 +174,44 @@ fn backoff_doubles() {
     assert_eq!(worker::backoff_minutes(99), 1024, "有上限");
 }
 
+#[sqlx::test(migrations = "./migrations")]
+async fn panicking_handler_is_treated_as_failure_and_does_not_kill_the_batch(pool: PgPool) {
+    let panics = enqueue(&pool, "test", json!({})).await;
+    let healthy = enqueue(&pool, "test", json!({})).await;
+    let before = Utc::now();
+    // run_once_with 本身要 Ok：panic 被隔離、不會冒出來讓這次呼叫失敗
+    let n = worker::run_once_with(&pool, move |job| async move {
+        if job.id == panics {
+            panic!("boom");
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(n, 2, "同一批的另一筆健康 job 不受影響");
+
+    let (status, attempts, err, payload, run_at) = job_row(&pool, panics).await;
+    assert_eq!(
+        (status.as_str(), attempts),
+        ("queued", 1),
+        "跟 Err 一樣走退避，不是卡在 running"
+    );
+    assert!(err.unwrap().contains("panicked"));
+    assert_eq!(payload, json!({}));
+    assert!(
+        run_at >= before + Duration::minutes(1) && run_at <= Utc::now() + Duration::minutes(3),
+        "{run_at}"
+    );
+
+    let (status, attempts, err, payload, _) = job_row(&pool, healthy).await;
+    assert_eq!(
+        (status.as_str(), attempts, err),
+        ("done", 1, None),
+        "同批的健康 job 照樣做完"
+    );
+    assert_eq!(payload, json!({}));
+}
+
 // ───── 排程工作 ─────
 
 fn input(items: Vec<(Uuid, i32)>) -> OrderInput {
@@ -296,6 +334,35 @@ async fn expires_orders_by_created_at_or_payment_expiry(pool: PgPool) {
     // 再跑一次沒有東西
     assert_eq!(scheduled::expire_unpaid_orders(&pool).await.unwrap(), 0);
     assert_eq!(stock_of(&pool, variant).await, 8);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn expire_one_rolls_back_payments_update_when_order_not_cancellable(pool: PgPool) {
+    let (variant, _) = common::active_product(&pool, "A", 100, 10).await;
+    let order = orders::create_order(&pool, input(vec![(variant, 1)]), None)
+        .await
+        .unwrap();
+    // 訂單已經不是 pending_payment（例如剛好在這一刻付款成功了）；payments 還是 pending
+    sqlx::query("UPDATE orders SET status = 'paid' WHERE id = $1")
+        .bind(order.order_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let cancelled = scheduled::expire_one(&pool, order.order_id).await.unwrap();
+    assert!(!cancelled, "cancel_in_tx 回 false 就不算過期成功");
+
+    let payment_status: String =
+        sqlx::query_scalar("SELECT status FROM payments WHERE order_id = $1")
+            .bind(order.order_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        payment_status, "pending",
+        "payments 的 UPDATE 要跟著 cancel_in_tx 的 false 一起 rollback，不能留下 expired"
+    );
+    assert_eq!(order_status(&pool, order.order_id).await.0, "paid");
 }
 
 #[sqlx::test(migrations = "./migrations")]

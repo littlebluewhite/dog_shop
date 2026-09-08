@@ -28,10 +28,7 @@ where
 
 /// 過期未付款（規格 §5）：到期時間 = 該訂單所有 payments.expire_at 的最大值 + 2 小時；
 /// 沒有任何繳費期限就 created_at + 3 天。到期 → cancelled(expired)、歸還庫存、pending 的 payments 標 expired。
-/// 每筆一個交易（一筆失敗不影響其他）；一輪最多 500 筆，下一輪再繼續。
-/// 交易內先 UPDATE payments 再 cancel_in_tx（先鎖 payments 再鎖 orders），
-/// 和 payments::apply_return 的鎖定順序一致，避免兩者互相死鎖（Task 8 controller ruling）；
-/// 訂單狀態已不是 pending_payment（cancel_in_tx 回 false）就整筆 rollback，payments 的更新也一併撤銷。
+/// 每筆都是獨立的交易（見 expire_one）：一筆失敗只記 log、略過，不影響其他筆；一輪最多 500 筆，下一輪再繼續。
 pub async fn expire_unpaid_orders(db: &PgPool) -> anyhow::Result<usize> {
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT o.id FROM orders o
@@ -47,21 +44,39 @@ pub async fn expire_unpaid_orders(db: &PgPool) -> anyhow::Result<usize> {
     .await?;
     let mut n = 0;
     for id in ids {
-        let mut tx = db.begin().await?;
-        sqlx::query("UPDATE payments SET status = $2, updated_at = now() WHERE order_id = $1 AND status = $3")
-            .bind(id)
-            .bind(payments::PAYMENT_EXPIRED)
-            .bind(payments::PAYMENT_PENDING)
-            .execute(&mut *tx)
-            .await?;
-        if orders::cancel_in_tx(&mut tx, id, "expired").await? {
-            tx.commit().await?;
-            n += 1;
-        } else {
-            tx.rollback().await?;
+        match expire_one(db, id).await {
+            Ok(true) => n += 1,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::error!(order_id = %id, error = %format!("{e:#}"), "過期取消失敗，略過這筆")
+            }
         }
     }
     Ok(n)
+}
+
+/// 單筆過期取消：交易內先 UPDATE payments 再 cancel_in_tx（先鎖 payments 再鎖 orders），
+/// 和 payments::apply_return 的鎖定順序一致，避免兩者互相死鎖（Task 8 controller ruling）；
+/// 訂單狀態已不是 pending_payment（cancel_in_tx 回 false）就整筆 rollback，payments 的更新也一併撤銷。
+/// 回 Ok(true) 表示真的取消了。獨立成函式讓 expire_unpaid_orders 可以每筆各自 try、失敗不中斷其他筆
+/// （Task 8 review：原本整個迴圈共用一個 `?`，排在最前面的一筆持續失敗會讓後面的筆永遠排不到）
+pub async fn expire_one(db: &PgPool, id: Uuid) -> anyhow::Result<bool> {
+    let mut tx = db.begin().await?;
+    sqlx::query(
+        "UPDATE payments SET status = $2, updated_at = now() WHERE order_id = $1 AND status = $3",
+    )
+    .bind(id)
+    .bind(payments::PAYMENT_EXPIRED)
+    .bind(payments::PAYMENT_PENDING)
+    .execute(&mut *tx)
+    .await?;
+    if orders::cancel_in_tx(&mut tx, id, "expired").await? {
+        tx.commit().await?;
+        Ok(true)
+    } else {
+        tx.rollback().await?;
+        Ok(false)
+    }
 }
 
 /// 出貨超過 14 天且沒被退回 → completed（規格 §9）。shipped_at 由計畫 4 的出貨寫入

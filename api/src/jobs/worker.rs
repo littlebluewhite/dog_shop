@@ -93,16 +93,30 @@ async fn mark_failed_attempt(db: &PgPool, job: &Job, error: &str) -> Result<(), 
     Ok(())
 }
 
-/// 跑一輪：認領、逐筆執行、標記。回處理的筆數。handler 可注入（測試用假的）
+/// 跑一輪：認領、逐筆執行、標記。回處理的筆數。handler 可注入（測試用假的）。
+/// 用 tokio::spawn 包住每次呼叫：handler 裡的 panic 不會拖垮整個 worker 迴圈（否則會一路 unwind
+/// 到 mod.rs 的 tokio::spawn，那個 task 就悄悄死掉、不會重啟），而是跟 Err 一樣走
+/// mark_failed_attempt，讓 max_attempts 照樣生效（Task 8 review）
 pub async fn run_once_with<F, Fut>(db: &PgPool, handler: F) -> anyhow::Result<usize>
 where
     F: Fn(Job) -> Fut,
-    Fut: Future<Output = anyhow::Result<()>>,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
 {
     let jobs = claim(db, BATCH).await?;
     let n = jobs.len();
     for job in jobs {
-        match handler(job.clone()).await {
+        let outcome = match tokio::spawn(handler(job.clone())).await {
+            Ok(result) => result,
+            Err(join_err) => {
+                let msg = if join_err.is_panic() {
+                    "handler panicked".to_string()
+                } else {
+                    format!("job task 未完成：{join_err}")
+                };
+                Err(anyhow::anyhow!(msg))
+            }
+        };
+        match outcome {
             Ok(()) => mark_done(db, job.id).await?,
             Err(e) => {
                 let msg = format!("{e:#}");
@@ -121,12 +135,13 @@ where
     Ok(n)
 }
 
-/// 正式的一輪：用 handlers::run
+/// 正式的一輪：用 handlers::run。每個 job 各自 clone 一份 AppState 讓 handler 的 future 不借用
+/// run_once 的參數，才能滿足 run_once_with 現在要求的 Send + 'static（tokio::spawn 隔離 panic 需要）
 pub async fn run_once(state: &AppState) -> anyhow::Result<usize> {
-    run_once_with(
-        &state.db,
-        |job| async move { handlers::run(state, &job).await },
-    )
+    run_once_with(&state.db, |job| {
+        let state = state.clone();
+        async move { handlers::run(&state, &job).await }
+    })
     .await
 }
 
