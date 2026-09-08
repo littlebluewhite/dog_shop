@@ -481,3 +481,83 @@ async fn import_routes_require_admin(pool: PgPool) {
         assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
     }
 }
+
+/// apply() 直接測（跳過 HTTP／解析層）：第二個商品的 products::validate 會擋（名稱超過 120
+/// 字，parse 不擋這個），要確認先全部驗證過再寫入——第一個商品也不能被寫進去。
+#[sqlx::test(migrations = "./migrations")]
+async fn commit_writes_nothing_when_a_later_product_fails_validation(pool: PgPool) {
+    use dog_shop_api::error::ApiError;
+    use dog_shop_api::import::{ImageFetcher, ImportProduct, ImportVariant, ParsedImport, apply};
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let upload_dir = tempfile::tempdir().unwrap();
+    let fetcher = ImageFetcher::new().unwrap();
+
+    let g1 = ImportProduct {
+        external_ref: "G1".to_string(),
+        first_row: 2,
+        name: "正常".to_string(),
+        description: None,
+        category: None,
+        option1_name: None,
+        option2_name: None,
+        image_urls: vec![],
+        variants: vec![ImportVariant {
+            row: 2,
+            option1_value: None,
+            option2_value: None,
+            sku: None,
+            price: 10,
+            stock: None,
+        }],
+    };
+    let g2 = ImportProduct {
+        external_ref: "G2".to_string(),
+        first_row: 3,
+        name: "x".repeat(121),
+        description: None,
+        category: None,
+        option1_name: None,
+        option2_name: None,
+        image_urls: vec![],
+        variants: vec![ImportVariant {
+            row: 3,
+            option1_value: None,
+            option2_value: None,
+            sku: None,
+            price: 10,
+            stock: None,
+        }],
+    };
+    let parsed = ParsedImport {
+        products: vec![g1, g2],
+        ..Default::default()
+    };
+    let categories_before: i64 = sqlx::query_scalar("SELECT count(*) FROM categories")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let err = apply(&pool, upload_dir.path(), &fetcher, &parsed)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "VALIDATION");
+    match &err {
+        ApiError::Validation { details, .. } => {
+            let fields = details["fields"].as_object().unwrap();
+            assert!(fields.keys().any(|k| k.starts_with("G2.")), "{fields:?}");
+        }
+        other => panic!("expected Validation, got {other:?}"),
+    }
+
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM products")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "G1 沒被寫入");
+    let categories_after: i64 = sqlx::query_scalar("SELECT count(*) FROM categories")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(categories_after, categories_before);
+}

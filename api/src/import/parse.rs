@@ -413,6 +413,19 @@ pub fn parse_grid(sheet: &str, grid: &[Vec<String>]) -> Result<ParsedImport, Imp
                 message: "有規格名稱時每一列都要填規格選項1".into(),
             });
         }
+        if p.option2_name.is_some() && p.variants.iter().any(|v| v.option2_value.is_none()) {
+            let r = p
+                .variants
+                .iter()
+                .find(|v| v.option2_value.is_none())
+                .map(|v| v.row)
+                .unwrap_or(p.first_row);
+            out.errors.push(RowError {
+                row: r,
+                column: Some(Column::Option2Value.label()),
+                message: "有規格名稱2 時每一列都要填規格選項2".into(),
+            });
+        }
         if p.option1_name.is_none() && p.variants.iter().any(|v| v.option1_value.is_some()) {
             let r = p
                 .variants
@@ -675,6 +688,38 @@ mod tests {
             p.products.last().unwrap().variants.len(),
             1,
             "第 9 列沒被掛到 E5"
+        );
+    }
+
+    #[test]
+    fn option2_name_requires_option2_value_on_every_row() {
+        let g = grid(&[
+            HEADER,
+            &[
+                "F6",
+                "雙規格",
+                "",
+                "",
+                "顏色",
+                "紅",
+                "尺寸",
+                "S",
+                "10",
+                "",
+                "",
+                "",
+            ],
+            &["F6", "", "", "", "", "紅", "", "", "10", "", "", ""],
+        ]);
+        let p = parse_grid("s", &g).unwrap();
+        assert!(
+            p.errors.contains(&RowError {
+                row: 3,
+                column: Some("規格選項2".into()),
+                message: "有規格名稱2 時每一列都要填規格選項2".into(),
+            }),
+            "{:?}",
+            p.errors
         );
     }
 

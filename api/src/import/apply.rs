@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Serialize;
+use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -41,15 +42,22 @@ pub struct ImportResult {
 }
 
 /// 全部商品逐一寫入。呼叫者保證 parsed.errors 是空的。
+///
+/// 先全部驗證再寫入：`validate_all` 用「乾跑」（不建分類、不下載圖片、不觸碰資料庫寫入）
+/// 把每個商品的 `products::validate` 都跑過一次，任何一個失敗就整批擋下、什麼都不寫——
+/// 驗證錯誤不會造成部分匯入。DB 唯一鍵衝突等只有真的下 INSERT/UPDATE 才查得出來的錯誤，
+/// 仍可能讓前面幾個商品已經 commit（那是既有「一個商品一個交易」設計下的極少數例外）。
 pub async fn apply(
     db: &PgPool,
     upload_dir: &Path,
     fetcher: &ImageFetcher,
     parsed: &ParsedImport,
 ) -> Result<ImportResult, ApiError> {
+    let existing_by_product = validate_all(db, &parsed.products).await?;
+
     let mut result = ImportResult::default();
     let mut category_cache: HashMap<String, Uuid> = HashMap::new();
-    for p in &parsed.products {
+    for (p, existing) in parsed.products.iter().zip(existing_by_product) {
         let category_id = match &p.category {
             None => None,
             Some(name) => match category_cache.get(name) {
@@ -61,7 +69,6 @@ pub async fn apply(
                 }
             },
         };
-        let existing = products::find_by_external_ref(db, &p.external_ref).await?;
 
         // 圖片：先下載，失敗只記警告；更新時全部失敗（或沒填）就保留原圖
         let mut images: Vec<ImageInput> = Vec::new();
@@ -124,6 +131,30 @@ pub async fn apply(
     Ok(result)
 }
 
+/// 乾跑：對每個商品用 `products::validate` 檢查一次（分類給 `None`——`validate` 不看
+/// `category_id`；圖片給空陣列，所以乾跑不檢查圖片張數上限——那條規則 parse 已經擋過
+/// （每個商品的圖片網址 ≤ MAX_IMAGES 個），保留原圖的情況也只是重用既有、已經驗過的圖片列）。
+/// 任何一個商品沒過就把全部欄位錯誤（各自加上商品編號前綴）收進同一個 `FieldErrors`，整批
+/// 擋下、不建分類、不下載圖片、不寫任何一列。查到的既有商品順便回傳給呼叫者的第二輪重用，
+/// 不用再查一次資料庫。
+async fn validate_all(
+    db: &PgPool,
+    products_in: &[ImportProduct],
+) -> Result<Vec<Option<AdminProduct>>, ApiError> {
+    let mut existing_by_product = Vec::with_capacity(products_in.len());
+    let mut errors = FieldErrors::new();
+    for p in products_in {
+        let existing = products::find_by_external_ref(db, &p.external_ref).await?;
+        let dry_input = build_input(p, existing.as_ref(), None, Vec::new());
+        if let Err(ApiError::Validation { details, .. }) = products::validate(&dry_input) {
+            add_prefixed_fields(&mut errors, &details, &p.external_ref);
+        }
+        existing_by_product.push(existing);
+    }
+    errors.into_result()?;
+    Ok(existing_by_product)
+}
+
 /// 既有商品當底，只覆蓋工作表有填的欄位（與規格不同之處 51）
 fn build_input(
     p: &ImportProduct,
@@ -178,20 +209,26 @@ fn build_input(
     }
 }
 
-/// products::validate／DB 撞唯一鍵的欄位錯誤加上商品編號，老闆才知道是哪一列。
-/// `ApiError::Validation` 存的是已經序列化好的 `details: Value`（不是 `FieldErrors`），
-/// 所以這裡直接從 `details.fields` 這個 JSON object 重建，不需要動 error.rs。
+/// `ApiError::Validation` 的 `details.fields`（已經序列化好的 JSON object，不是 `FieldErrors`——
+/// 所以這裡直接讀 JSON，不需要動 error.rs）逐一加上 `{external_ref}.` 前綴、收進 acc。
+/// `annotate` 與 `validate_all` 共用，欄位錯誤不管來自哪個商品都合併得起來。
+fn add_prefixed_fields(acc: &mut FieldErrors, details: &Value, external_ref: &str) {
+    if let Some(fields) = details.get("fields").and_then(|v| v.as_object()) {
+        for (k, v) in fields {
+            if let Some(msg) = v.as_str() {
+                acc.add(&format!("{external_ref}.{k}"), msg);
+            }
+        }
+    }
+}
+
+/// products::validate／DB 撞唯一鍵的欄位錯誤加上商品編號，老闆才知道是哪一列。非欄位錯誤
+/// （例如資料庫連線問題的 `Internal`）原樣往上丟，不能被吞成假的 400。
 fn annotate(err: ApiError, p: &ImportProduct) -> ApiError {
     match err {
         ApiError::Validation { details, .. } => {
             let mut out = FieldErrors::new();
-            if let Some(fields) = details.get("fields").and_then(|v| v.as_object()) {
-                for (k, v) in fields {
-                    if let Some(msg) = v.as_str() {
-                        out.add(&format!("{}.{k}", p.external_ref), msg);
-                    }
-                }
-            }
+            add_prefixed_fields(&mut out, &details, &p.external_ref);
             out.into_error()
         }
         other => other,
