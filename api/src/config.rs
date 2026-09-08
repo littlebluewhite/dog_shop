@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -12,6 +13,8 @@ pub struct Config {
     pub cookie_secure: bool,
     /// 圖片存放目錄
     pub upload_dir: PathBuf,
+    /// api 監聽位址（LISTEN_ADDR），例如 0.0.0.0:8080
+    pub listen_addr: String,
     /// 綠界（規格 §8）
     pub ecpay: EcpayConfig,
     /// SMTP；None 表示沒設定，Email 只記 log（與規格不同之處 22）
@@ -29,6 +32,7 @@ impl std::fmt::Debug for Config {
             .field("public_base_url", &self.public_base_url)
             .field("cookie_secure", &self.cookie_secure)
             .field("upload_dir", &self.upload_dir)
+            .field("listen_addr", &self.listen_addr)
             .field("ecpay", &self.ecpay)
             .field("smtp", &self.smtp)
             .field("mail_log_body", &self.mail_log_body)
@@ -123,10 +127,9 @@ impl std::fmt::Debug for SmtpConfig {
     }
 }
 
-/// 讀環境變數，去頭尾空白，空字串當沒設
-fn env_trimmed(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
+/// 從一組變數讀值，去頭尾空白，空字串當沒設
+fn trimmed(vars: &HashMap<String, String>, name: &str) -> Option<String> {
+    vars.get(name)
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
 }
@@ -141,76 +144,113 @@ fn flag_enabled(value: Option<&str>) -> bool {
 
 /// 讀一組憑證：stage 時空值退回公開測試憑證；prod 時三個都必填（與規格不同之處 24）
 fn credentials(
+    vars: &HashMap<String, String>,
     prefix: &str,
     env: EcpayEnv,
     stage: (&str, &str, &str),
 ) -> anyhow::Result<EcpayCredentials> {
     let read = |suffix: &str, fallback: &str| -> anyhow::Result<String> {
         let name = format!("{prefix}_{suffix}");
-        match (env_trimmed(&name), env) {
+        match (trimmed(vars, &name), env) {
             (Some(value), _) => Ok(value),
             (None, EcpayEnv::Stage) => Ok(fallback.to_string()),
             (None, EcpayEnv::Prod) => anyhow::bail!("ECPAY_ENV=prod 時必須設定 {name}"),
         }
     };
-    Ok(EcpayCredentials {
+    let creds = EcpayCredentials {
         merchant_id: read("MERCHANT_ID", stage.0)?,
         hash_key: read("HASH_KEY", stage.1)?,
         hash_iv: read("HASH_IV", stage.2)?,
-    })
+    };
+    // 正式環境不能用公開的測試特店憑證（與規格不同之處 55；計畫 3 審查交接 9、計畫 4 審查交接 3）。
+    // 只比對、不印值（規格 §11）
+    if env == EcpayEnv::Prod
+        && (creds.merchant_id == stage.0 || creds.hash_key == stage.1 || creds.hash_iv == stage.2)
+    {
+        anyhow::bail!("ECPAY_ENV=prod 時 {prefix} 不能用測試特店憑證（.env.example 裡的值）");
+    }
+    Ok(creds)
 }
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        let database_url = std::env::var("DATABASE_URL").context("缺少環境變數 DATABASE_URL")?;
-        let public_base_url = std::env::var("PUBLIC_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:5173".to_string())
-            .trim_end_matches('/')
-            .to_string();
-        let cookie_secure = match std::env::var("COOKIE_SECURE") {
-            Ok(value) => !matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "false" | "0" | "no"
-            ),
-            Err(_) => true,
-        };
-        let upload_dir =
-            PathBuf::from(std::env::var("UPLOAD_DIR").unwrap_or_else(|_| "./uploads".to_string()));
+        let vars: HashMap<String, String> = std::env::vars().collect();
+        Self::from_vars(&vars)
+    }
 
-        let ecpay_env = match env_trimmed("ECPAY_ENV").as_deref() {
+    /// 從一組變數建設定；正式環境（ECPAY_ENV=prod）多做上線檢查（與規格不同之處 55）
+    pub fn from_vars(vars: &HashMap<String, String>) -> anyhow::Result<Self> {
+        let database_url = trimmed(vars, "DATABASE_URL").context("缺少環境變數 DATABASE_URL")?;
+        let ecpay_env = match trimmed(vars, "ECPAY_ENV").as_deref() {
             None | Some("stage") => EcpayEnv::Stage,
             Some("prod") => EcpayEnv::Prod,
             Some(other) => anyhow::bail!("ECPAY_ENV 只能是 stage 或 prod，收到 {other}"),
         };
+        let is_prod = ecpay_env == EcpayEnv::Prod;
+
+        let public_base_url = match trimmed(vars, "PUBLIC_BASE_URL") {
+            Some(u) => u.trim_end_matches('/').to_string(),
+            None if is_prod => {
+                anyhow::bail!("ECPAY_ENV=prod 時必須設定 PUBLIC_BASE_URL（https 的公開網址）")
+            }
+            None => "http://localhost:5173".to_string(),
+        };
+        if is_prod && !public_base_url.starts_with("https://") {
+            anyhow::bail!(
+                "ECPAY_ENV=prod 時 PUBLIC_BASE_URL 必須是 https://（綠界回呼與 Secure cookie 都需要）"
+            );
+        }
+        let cookie_secure = match trimmed(vars, "COOKIE_SECURE") {
+            Some(value) => !matches!(value.to_ascii_lowercase().as_str(), "false" | "0" | "no"),
+            None => true,
+        };
+        if is_prod && !cookie_secure {
+            anyhow::bail!("ECPAY_ENV=prod 時 COOKIE_SECURE 不能關");
+        }
+        let upload_dir =
+            PathBuf::from(trimmed(vars, "UPLOAD_DIR").unwrap_or_else(|| "./uploads".to_string()));
+        let listen_addr =
+            trimmed(vars, "LISTEN_ADDR").unwrap_or_else(|| "0.0.0.0:8080".to_string());
+
         let ecpay = EcpayConfig {
             env: ecpay_env,
-            aio: credentials("ECPAY_AIO", ecpay_env, STAGE_AIO)?,
-            invoice: credentials("ECPAY_INVOICE", ecpay_env, STAGE_INVOICE)?,
-            logistics: credentials("ECPAY_LOGISTICS", ecpay_env, STAGE_LOGISTICS)?,
+            aio: credentials(vars, "ECPAY_AIO", ecpay_env, STAGE_AIO)?,
+            invoice: credentials(vars, "ECPAY_INVOICE", ecpay_env, STAGE_INVOICE)?,
+            logistics: credentials(vars, "ECPAY_LOGISTICS", ecpay_env, STAGE_LOGISTICS)?,
         };
 
-        let smtp = match env_trimmed("SMTP_HOST") {
+        let smtp = match trimmed(vars, "SMTP_HOST") {
+            None if is_prod => anyhow::bail!(
+                "ECPAY_ENV=prod 時必須設定 SMTP_HOST 與 SMTP_FROM（訂單信、發票信都靠它）"
+            ),
             None => None,
             Some(host) => Some(SmtpConfig {
                 host,
-                port: env_trimmed("SMTP_PORT")
+                port: trimmed(vars, "SMTP_PORT")
                     .map(|p| p.parse::<u16>().context("SMTP_PORT 要是 1～65535 的數字"))
                     .transpose()?
                     .unwrap_or(587),
-                user: env_trimmed("SMTP_USER"),
-                pass: env_trimmed("SMTP_PASS"),
-                from: env_trimmed("SMTP_FROM").context("有 SMTP_HOST 就必須設定 SMTP_FROM")?,
+                user: trimmed(vars, "SMTP_USER"),
+                pass: trimmed(vars, "SMTP_PASS"),
+                from: trimmed(vars, "SMTP_FROM").context("有 SMTP_HOST 就必須設定 SMTP_FROM")?,
             }),
         };
+        let mail_log_body = flag_enabled(trimmed(vars, "MAIL_LOG_BODY").as_deref());
+        if is_prod && mail_log_body {
+            anyhow::bail!(
+                "ECPAY_ENV=prod 時不能開 MAIL_LOG_BODY（信件內文含重設連結與訪客訂單網址）"
+            );
+        }
 
         Ok(Self {
             database_url,
             public_base_url,
             cookie_secure,
             upload_dir,
+            listen_addr,
             ecpay,
             smtp,
-            mail_log_body: flag_enabled(env_trimmed("MAIL_LOG_BODY").as_deref()),
+            mail_log_body,
         })
     }
 
@@ -221,6 +261,7 @@ impl Config {
             public_base_url: "http://localhost:5173".to_string(),
             cookie_secure: false,
             upload_dir,
+            listen_addr: "127.0.0.1:0".to_string(),
             ecpay: EcpayConfig {
                 env: EcpayEnv::Stage,
                 aio: EcpayCredentials {
@@ -261,6 +302,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn cfg(base: &str) -> Config {
         Config {
@@ -353,6 +395,137 @@ mod tests {
         assert_eq!(
             cfg.ecpay.logistics_base_url(),
             "https://logistics-stage.ecpay.com.tw"
+        );
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn prod_ok() -> HashMap<String, String> {
+        vars(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("ECPAY_ENV", "prod"),
+            ("PUBLIC_BASE_URL", "https://shop.example.com/"),
+            ("ECPAY_AIO_MERCHANT_ID", "1234567"),
+            ("ECPAY_AIO_HASH_KEY", "aaaaaaaaaaaaaaaa"),
+            ("ECPAY_AIO_HASH_IV", "bbbbbbbbbbbbbbbb"),
+            ("ECPAY_INVOICE_MERCHANT_ID", "1234567"),
+            ("ECPAY_INVOICE_HASH_KEY", "cccccccccccccccc"),
+            ("ECPAY_INVOICE_HASH_IV", "dddddddddddddddd"),
+            ("ECPAY_LOGISTICS_MERCHANT_ID", "1234567"),
+            ("ECPAY_LOGISTICS_HASH_KEY", "eeeeeeeeeeeeeeee"),
+            ("ECPAY_LOGISTICS_HASH_IV", "ffffffffffffffff"),
+            ("SMTP_HOST", "smtp.example.com"),
+            ("SMTP_FROM", "shop@example.com"),
+        ])
+    }
+
+    #[test]
+    fn stage_defaults_fill_in_public_test_credentials() {
+        let c = Config::from_vars(&vars(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        assert_eq!(c.ecpay.env, EcpayEnv::Stage);
+        assert_eq!(c.ecpay.logistics.merchant_id, STAGE_LOGISTICS.0);
+        assert_eq!(c.public_base_url, "http://localhost:5173");
+        assert_eq!(c.listen_addr, "0.0.0.0:8080");
+        assert!(c.cookie_secure);
+    }
+
+    #[test]
+    fn prod_accepts_a_complete_real_configuration() {
+        let c = Config::from_vars(&prod_ok()).unwrap();
+        assert_eq!(c.ecpay.env, EcpayEnv::Prod);
+        assert_eq!(c.public_base_url, "https://shop.example.com");
+        assert!(c.smtp.is_some());
+    }
+
+    #[test]
+    fn prod_rejects_stage_credentials_even_partially() {
+        let mut v = prod_ok();
+        v.insert("ECPAY_LOGISTICS_HASH_KEY".into(), STAGE_LOGISTICS.1.into());
+        let err = Config::from_vars(&v).unwrap_err().to_string();
+        assert!(
+            err.contains("ECPAY_LOGISTICS") && err.contains("測試特店"),
+            "{err}"
+        );
+        let mut v = prod_ok();
+        v.insert("ECPAY_AIO_MERCHANT_ID".into(), STAGE_AIO.0.into());
+        v.insert("ECPAY_AIO_HASH_KEY".into(), STAGE_AIO.1.into());
+        v.insert("ECPAY_AIO_HASH_IV".into(), STAGE_AIO.2.into());
+        assert!(
+            Config::from_vars(&v)
+                .unwrap_err()
+                .to_string()
+                .contains("ECPAY_AIO")
+        );
+        let mut v = prod_ok();
+        v.insert("ECPAY_INVOICE_HASH_IV".into(), STAGE_INVOICE.2.into());
+        assert!(
+            Config::from_vars(&v)
+                .unwrap_err()
+                .to_string()
+                .contains("ECPAY_INVOICE")
+        );
+    }
+
+    #[test]
+    fn prod_requires_https_base_url_secure_cookie_and_smtp() {
+        let mut v = prod_ok();
+        v.insert("PUBLIC_BASE_URL".into(), "http://shop.example.com".into());
+        assert!(
+            Config::from_vars(&v)
+                .unwrap_err()
+                .to_string()
+                .contains("PUBLIC_BASE_URL")
+        );
+        let mut v = prod_ok();
+        v.remove("PUBLIC_BASE_URL");
+        assert!(
+            Config::from_vars(&v)
+                .unwrap_err()
+                .to_string()
+                .contains("PUBLIC_BASE_URL")
+        );
+        let mut v = prod_ok();
+        v.insert("COOKIE_SECURE".into(), "false".into());
+        assert!(
+            Config::from_vars(&v)
+                .unwrap_err()
+                .to_string()
+                .contains("COOKIE_SECURE")
+        );
+        let mut v = prod_ok();
+        v.remove("SMTP_HOST");
+        assert!(
+            Config::from_vars(&v)
+                .unwrap_err()
+                .to_string()
+                .contains("SMTP_HOST")
+        );
+        let mut v = prod_ok();
+        v.insert("MAIL_LOG_BODY".into(), "1".into());
+        assert!(
+            Config::from_vars(&v)
+                .unwrap_err()
+                .to_string()
+                .contains("MAIL_LOG_BODY")
+        );
+        let mut v = prod_ok();
+        v.insert("LISTEN_ADDR".into(), "127.0.0.1:9090".into());
+        assert_eq!(Config::from_vars(&v).unwrap().listen_addr, "127.0.0.1:9090");
+    }
+
+    #[test]
+    fn error_messages_never_contain_secret_values() {
+        let mut v = prod_ok();
+        v.insert("ECPAY_AIO_HASH_KEY".into(), STAGE_AIO.1.into());
+        let err = Config::from_vars(&v).unwrap_err().to_string();
+        assert!(
+            !err.contains(STAGE_AIO.1) && !err.contains("aaaaaaaaaaaaaaaa"),
+            "{err}"
         );
     }
 }

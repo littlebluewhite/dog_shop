@@ -60,22 +60,24 @@ pub fn backoff_minutes(attempts: i32) -> i32 {
     2_i32.pow(attempts.clamp(0, MAX_BACKOFF_EXP) as u32)
 }
 
-async fn mark_done(db: &PgPool, id: i64) -> Result<(), sqlx::Error> {
+/// 標記完成；只有還是 running 才會改（可能已被 requeue_stale 重排給別的 worker，計畫 4 交接 2）。
+/// 回傳是否真的改到（rows_affected > 0）
+pub async fn mark_done(db: &PgPool, id: i64) -> Result<bool, sqlx::Error> {
     // payload 清成 {} 不留個資（計畫 2 交接 2）
-    sqlx::query(
-        "UPDATE jobs SET status = 'done', payload = '{}'::jsonb, last_error = NULL, updated_at = now() WHERE id = $1",
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'done', payload = '{}'::jsonb, last_error = NULL, updated_at = now() WHERE id = $1 AND status = 'running'",
     )
     .bind(id)
     .execute(db)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 async fn mark_failed_attempt(db: &PgPool, job: &Job, error: &str) -> Result<(), sqlx::Error> {
     let error: String = error.chars().take(1000).collect();
     if job.is_last_attempt() {
         sqlx::query(
-            "UPDATE jobs SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
+            "UPDATE jobs SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1 AND status = 'running'",
         )
         .bind(job.id)
         .bind(error)
@@ -84,7 +86,7 @@ async fn mark_failed_attempt(db: &PgPool, job: &Job, error: &str) -> Result<(), 
     } else {
         sqlx::query(
             "UPDATE jobs SET status = 'queued', run_at = now() + make_interval(mins => $3), last_error = $2, updated_at = now()
-             WHERE id = $1",
+             WHERE id = $1 AND status = 'running'",
         )
         .bind(job.id)
         .bind(error)
@@ -142,7 +144,14 @@ where
             }
         };
         match outcome {
-            Ok(()) => mark_done(db, job.id).await?,
+            Ok(()) => {
+                if !mark_done(db, job.id).await? {
+                    tracing::warn!(
+                        job_id = job.id,
+                        "job 已不是 running（可能被 requeue_stale 重排），不改狀態"
+                    );
+                }
+            }
             Err(e) => {
                 let msg = format!("{e:#}");
                 tracing::warn!(

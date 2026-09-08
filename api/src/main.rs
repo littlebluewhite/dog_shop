@@ -50,8 +50,8 @@ async fn main() -> anyhow::Result<()> {
     jobs::start(state.clone());
     let app = app::router(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
-    tracing::info!("api listening on http://0.0.0.0:8080");
+    let listener = tokio::net::TcpListener::bind(&config.listen_addr).await?;
+    tracing::info!(addr = %config.listen_addr, "api listening");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -62,6 +62,23 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => tracing::error!(error = %e, "無法監聽 SIGTERM"),
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
     tracing::info!("shutting down");
 }

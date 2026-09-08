@@ -586,3 +586,30 @@ async fn purge_removes_expired_rows(pool: PgPool) {
         .unwrap();
     assert_eq!((sessions, resets, stores, jobs_left), (1, 1, 0, 2));
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_requeued_job_is_not_marked_done_by_its_stale_runner(pool: PgPool) {
+    use dog_shop_api::jobs::worker;
+    // 排一個 job，手動把它變成 running（模擬第一個 worker 拿走）
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO jobs (kind, payload, dedupe_key, status, attempts, max_attempts, run_at)
+         VALUES ('send_email', '{}'::jsonb, 'test:stale', 'running', 1, 3, now()) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    // requeue_stale 把它排回 queued（第二個 worker 會再拿）
+    sqlx::query("UPDATE jobs SET status = 'queued', run_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // 第一個 worker 這時才回來說做完了 → 不能改
+    assert!(!worker::mark_done(&pool, id).await.unwrap());
+    let status: String = sqlx::query_scalar("SELECT status FROM jobs WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "queued");
+}
