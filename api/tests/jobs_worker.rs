@@ -373,12 +373,16 @@ async fn expire_one_rolls_back_payments_update_when_order_not_cancellable(pool: 
     let order = orders::create_order(&pool, input(vec![(variant, 1)]), None)
         .await
         .unwrap();
-    // 訂單已經不是 pending_payment（例如剛好在這一刻付款成功了）；payments 還是 pending
-    sqlx::query("UPDATE orders SET status = 'paid' WHERE id = $1")
-        .bind(order.order_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    // 訂單已經不是 pending_payment（例如剛好在這一刻付款成功了）；payments 還是 pending。
+    // created_at 調成 4 天前，讓交易內的到期重查（created_at + 3 天）判定「到期」，
+    // 才會真的走到 cancel_in_tx 回 false 的 rollback 分支（不然在重查那一步就先 rollback 了）
+    sqlx::query(
+        "UPDATE orders SET status = 'paid', created_at = now() - interval '4 days' WHERE id = $1",
+    )
+    .bind(order.order_id)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let cancelled = scheduled::expire_one(&pool, order.order_id).await.unwrap();
     assert!(!cancelled, "cancel_in_tx 回 false 就不算過期成功");
