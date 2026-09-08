@@ -396,6 +396,62 @@ async fn expire_one_rolls_back_payments_update_when_order_not_cancellable(pool: 
     assert_eq!(order_status(&pool, order.order_id).await.0, "paid");
 }
 
+/// 掃描 SELECT 與 expire_one 之間，PaymentInfoURL 回呼給了一個未來的繳費期限（買家剛取得
+/// ATM 帳號）：交易內要重算到期條件，不能照著過期的預篩結果把訂單取消掉
+#[sqlx::test(migrations = "./migrations")]
+async fn expire_one_keeps_order_whose_deadline_was_extended(pool: PgPool) {
+    let (variant, _) = common::active_product(&pool, "A", 100, 10).await;
+    let order = orders::create_order(&pool, input(vec![(variant, 2)]), None)
+        .await
+        .unwrap();
+    assert_eq!(stock_of(&pool, variant).await, 8);
+    // 預篩（created_at + 3 天）會選中這筆
+    sqlx::query("UPDATE orders SET created_at = now() - interval '4 days' WHERE id = $1")
+        .bind(order.order_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // 但取號回呼已經寫進明天才到期的繳費期限
+    sqlx::query("UPDATE payments SET expire_at = now() + interval '1 day' WHERE order_id = $1")
+        .bind(order.order_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert!(
+        !scheduled::expire_one(&pool, order.order_id).await.unwrap(),
+        "繳費期限還沒到，不能取消"
+    );
+    assert_eq!(
+        order_status(&pool, order.order_id).await.0,
+        "pending_payment"
+    );
+    let payment_status: String =
+        sqlx::query_scalar("SELECT status FROM payments WHERE order_id = $1")
+            .bind(order.order_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        payment_status, "pending",
+        "payments 的 UPDATE 要一起 rollback"
+    );
+    assert_eq!(stock_of(&pool, variant).await, 8, "庫存不能被歸還");
+
+    // 對照組：繳費期限過了 2 小時緩衝 → 照樣取消
+    sqlx::query("UPDATE payments SET expire_at = now() - interval '3 hours' WHERE order_id = $1")
+        .bind(order.order_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(scheduled::expire_one(&pool, order.order_id).await.unwrap());
+    assert_eq!(
+        order_status(&pool, order.order_id).await,
+        ("cancelled".to_string(), Some("expired".to_string()))
+    );
+    assert_eq!(stock_of(&pool, variant).await, 10);
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn auto_completes_shipped_after_14_days_unless_returned(pool: PgPool) {
     let (variant, _) = common::active_product(&pool, "A", 100, 10).await;

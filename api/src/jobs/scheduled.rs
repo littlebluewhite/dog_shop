@@ -1,6 +1,7 @@
 //! 排程型工作（規格 §9）：不走 jobs 表，直接定時掃
 use std::{future::Future, time::Duration};
 
+use chrono::{DateTime, TimeDelta, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -23,6 +24,15 @@ where
             Ok(n) => tracing::info!(task = name, affected = n, "排程工作完成"),
             Err(e) => tracing::error!(task = name, error = %format!("{e:#}"), "排程工作失敗"),
         }
+    }
+}
+
+/// 到期時間（規格 §5）：所有 payments.expire_at 的最大值 + 2 小時緩衝；沒有任何繳費期限就
+/// created_at + 3 天。expire_unpaid_orders 的預篩 SQL 與 expire_one 的鎖內重查照同一個定義
+fn deadline(created_at: DateTime<Utc>, max_expire: Option<DateTime<Utc>>) -> DateTime<Utc> {
+    match max_expire {
+        Some(expire_at) => expire_at + TimeDelta::hours(2),
+        None => created_at + TimeDelta::days(3),
     }
 }
 
@@ -55,8 +65,9 @@ pub async fn expire_unpaid_orders(db: &PgPool) -> anyhow::Result<usize> {
     Ok(n)
 }
 
-/// 單筆過期取消：交易內先 UPDATE payments 再 cancel_in_tx（先鎖 payments 再鎖 orders），
-/// 和 payments::apply_return 的鎖定順序一致，避免兩者互相死鎖（Task 8 controller ruling）；
+/// 單筆過期取消：交易內先 UPDATE payments、再鎖訂單列重算到期條件、最後 cancel_in_tx
+/// （先鎖 payments 再鎖 orders），和 payments::apply_return 的鎖定順序一致，避免兩者互相死鎖
+/// （Task 8 controller ruling）；
 /// 訂單狀態已不是 pending_payment（cancel_in_tx 回 false）就整筆 rollback，payments 的更新也一併撤銷。
 /// 回 Ok(true) 表示真的取消了。獨立成函式讓 expire_unpaid_orders 可以每筆各自 try、失敗不中斷其他筆
 /// （Task 8 review：原本整個迴圈共用一個 `?`，排在最前面的一筆持續失敗會讓後面的筆永遠排不到）
@@ -70,6 +81,23 @@ pub async fn expire_one(db: &PgPool, id: Uuid) -> anyhow::Result<bool> {
     .bind(payments::PAYMENT_PENDING)
     .execute(&mut *tx)
     .await?;
+    // expire_unpaid_orders 的 SELECT 只是預篩：那之後 PaymentInfoURL 回呼可能寫進新的繳費期限
+    // （買家剛取得 ATM 虛擬帳號或超商代碼），照預篩結果取消會害買家繳一筆已取消的訂單。
+    // 鎖住訂單列後在同一個交易內重算到期條件，沒到期就整筆 rollback（codex P1-2）
+    let row: Option<(DateTime<Utc>, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT o.created_at,
+                (SELECT max(p.expire_at) FROM payments p WHERE p.order_id = o.id) AS max_expire
+         FROM orders o WHERE o.id = $1 FOR UPDATE OF o",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let due =
+        row.is_some_and(|(created_at, max_expire)| deadline(created_at, max_expire) <= Utc::now());
+    if !due {
+        tx.rollback().await?;
+        return Ok(false);
+    }
     if orders::cancel_in_tx(&mut tx, id, "expired").await? {
         tx.commit().await?;
         Ok(true)
