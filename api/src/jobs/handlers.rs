@@ -10,7 +10,7 @@ use crate::{
         jobs::{self, KIND_ISSUE_INVOICE, KIND_SEND_EMAIL},
         orders::{
             self, OrderDetail, PAYMENT_ATM, PAYMENT_CREDIT, PAYMENT_CVS_CODE, SHIPPING_CVS,
-            STATUS_COMPLETED, STATUS_PAID, STATUS_SHIPPED,
+            STATUS_COMPLETED, STATUS_PAID, STATUS_PENDING_PAYMENT, STATUS_SHIPPED,
         },
         password_resets, payments,
         settings::{self, ShopSettings},
@@ -166,6 +166,19 @@ async fn send_email(state: &AppState, payload: &Value) -> anyhow::Result<()> {
             let payment = payments::get(&state.db, payload_uuid(payload, "payment_id")?)
                 .await?
                 .context("payment_instructions 找不到 payment")?;
+            // 排入與寄出之間訂單可能已取消、或已由另一筆 attempt 付清：不能再叫客人去繳費
+            if payment.status != payments::PAYMENT_PENDING
+                || detail.order.status != STATUS_PENDING_PAYMENT
+            {
+                tracing::info!(
+                    %order_id,
+                    payment_id = %payment.id,
+                    payment_status = %payment.status,
+                    order_status = %detail.order.status,
+                    "訂單已不是待付款，略過繳費資訊信"
+                );
+                return Ok(());
+            }
             templates::PaymentInstructionsMail {
                 shop_name: shop.name.clone(),
                 order_no,

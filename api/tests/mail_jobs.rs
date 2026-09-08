@@ -1,6 +1,8 @@
 mod common;
 
-use dog_shop_api::domain::orders::{self, HomeAddress, InvoiceInput, OrderInput, OrderItemInput};
+use dog_shop_api::domain::orders::{
+    self, HomeAddress, InvoiceInput, OrderInput, OrderItemInput, Viewer,
+};
 use dog_shop_api::domain::{jobs, password_resets, users};
 use dog_shop_api::jobs::worker;
 use dog_shop_api::state::AppState;
@@ -125,6 +127,49 @@ async fn member_order_link_has_no_token(pool: PgPool) {
         created.order_id
     )));
     assert!(!emails[0].text.contains("?t="));
+}
+
+/// 排入繳費資訊信之後、worker 跑到之前訂單被取消（或已由另一筆 attempt 付清）：
+/// 不能再叫客人去繳一筆已取消的訂單
+#[sqlx::test(migrations = "./migrations")]
+async fn payment_instructions_not_sent_after_order_cancelled(pool: PgPool) {
+    let state = common::state(pool.clone());
+    let (variant, _) = common::active_product(&pool, "A", 300, 5).await;
+    let created = orders::create_order(&pool, home_input(vec![(variant, 1)], "atm"), None)
+        .await
+        .unwrap();
+    let payment_id: Uuid = sqlx::query_scalar("SELECT id FROM payments WHERE order_id = $1")
+        .bind(created.order_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    enqueue(
+        &pool,
+        json!({ "template": "payment_instructions", "order_id": created.order_id, "payment_id": payment_id }),
+    )
+    .await;
+    orders::cancel(
+        &pool,
+        created.order_id,
+        &Viewer::Guest(created.guest_token.clone()),
+        "buyer",
+    )
+    .await
+    .unwrap();
+    run_all(&state).await;
+
+    let emails = common::sent_emails(&state);
+    assert!(
+        !emails.iter().any(|m| m.subject.contains("繳費資訊")),
+        "訂單已取消還是寄了繳費資訊信：{:?}",
+        emails.iter().map(|m| &m.subject).collect::<Vec<_>>()
+    );
+    assert_eq!(emails.len(), 1, "只有 order_created");
+    let jobs = job_rows(&pool).await;
+    assert!(
+        jobs.iter().all(|j| j.0 == "done"),
+        "略過不算失敗，job 要標 done：{jobs:?}"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
