@@ -3,5 +3,6 @@
 pub mod aes;
 pub mod aio;
 pub mod invoice;
+pub mod logistics;
 pub mod mac;
 pub mod time;

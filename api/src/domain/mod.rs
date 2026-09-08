@@ -9,4 +9,5 @@ pub mod password_resets;
 pub mod payments;
 pub mod products;
 pub mod settings;
+pub mod shipments;
 pub mod users;

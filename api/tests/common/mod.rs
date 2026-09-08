@@ -11,6 +11,7 @@ use dog_shop_api::{
     app,
     config::Config,
     ecpay::invoice::{FakeInvoiceGateway, InvoiceGateway},
+    ecpay::logistics::{FakeLogisticsGateway, LogisticsGateway},
     mail::{Email, Mailer},
     state::AppState,
 };
@@ -31,6 +32,7 @@ pub fn state(pool: PgPool) -> AppState {
         config: Arc::new(Config::for_tests(upload_dir)),
         mailer: Arc::new(mailer),
         invoices: Arc::new(InvoiceGateway::Fake(FakeInvoiceGateway::default())),
+        logistics: Arc::new(LogisticsGateway::Fake(FakeLogisticsGateway::default())),
     }
 }
 
@@ -221,5 +223,13 @@ pub fn fake_invoices(state: &AppState) -> &FakeInvoiceGateway {
     match &*state.invoices {
         InvoiceGateway::Fake(fake) => fake,
         InvoiceGateway::Ecpay(_) => panic!("測試的 AppState 要用 InvoiceGateway::Fake"),
+    }
+}
+
+/// 測試裡的假物流閘道（看 calls()、排下一次的回應）
+pub fn fake_logistics(state: &AppState) -> &FakeLogisticsGateway {
+    match &*state.logistics {
+        LogisticsGateway::Fake(fake) => fake,
+        LogisticsGateway::Ecpay(_) => panic!("測試的 AppState 要用 LogisticsGateway::Fake"),
     }
 }

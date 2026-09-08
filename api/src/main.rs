@@ -38,11 +38,13 @@ async fn main() -> anyhow::Result<()> {
 
     let mailer = Arc::new(mail::Mailer::from_config(&config)?);
     let invoices = Arc::new(ecpay::invoice::InvoiceGateway::ecpay(&config.ecpay)?);
+    let logistics = Arc::new(ecpay::logistics::LogisticsGateway::ecpay()?);
     let state = AppState {
         db,
         config: config.clone(),
         mailer,
         invoices,
+        logistics,
     };
     // 背景工作：jobs worker 與排程掃描（規格 §9），和 api 同一個行程、同一個連線池
     jobs::start(state.clone());
