@@ -1,7 +1,7 @@
 # 計畫 3 最終審查：綠界金流、背景工作、Email、電子發票
 
 日期：2026-09-08
-範圍：`f8bd3b7..80b9b73`（分支 `worktree-mvp-design`，15 個 commit、58 個檔案、+6592/−50）；修正波後至 `c54d23d`（共 19 個 commit、59 個檔案、+6925/−50，見附錄 B）
+範圍：`f8bd3b7..80b9b73`（分支 `worktree-mvp-design`，15 個 commit、58 個檔案、+6592/−50）；修正波後至 `c54d23d`（共 19 個 commit、59 個檔案、+6925/−50，見附錄 B）；codex 第二意見審查修正波後至 `ecd2871`（共 28 個 commit、61 個檔案、+7750/−53，見附錄 C）
 審查者：Senior Code Reviewer（整支分支、只讀）
 規格權威：`docs/superpowers/specs/2026-09-06-dog-shop-mvp-design.md`；計畫：`docs/superpowers/plans/2026-09-08-dog-shop-plan-3-payments-jobs-email.md`；逐任務裁決：見附錄 A
 
@@ -314,3 +314,47 @@
 **修正波後的裁決：Ready to merge（本機分支）。** 人工驗收項目不變：綠界 stage 全流程走查（`docs/dev/ecpay-stage.md`）與訂單頁的 SQL 模擬走查仍未有人走過，計畫 5 上線前必須完成。
 
 控制者在 `c54d23d` 重跑全套閘門：`cargo fmt --check` 乾淨、`cargo clippy --all-targets -D warnings` 乾淨、`cargo test` 170／170（67 個單元測試 ＋ 21 個整合測試檔 103 個）；`pnpm -C web check` 0 錯誤 0 警告、vitest 27／27、`pnpm -C web build` 成功。修正波沒有動 web，Playwright 主流程維持 Task 12 在 `80b9b73` 的 1 passed。
+
+---
+
+## 附錄 C：codex 第二意見審查與修正（`/codex-review-fix`）
+
+依使用者指示，計畫收尾時用 `codex exec -s read-only`（codex CLI 0.153.4、model `gpt-6-astra`、reasoning `xhigh`）對 `f8bd3b7..9ca51a3` 做一次只讀的第二意見審查。codex 回報 **6 條可行動的問題（2×P1、4×P2、0×P3）**；控制者逐條打開引用的 file:line 對照程式碼與規格後，**6 條全部判定為真**，一次派工（opus）全部修正，每條附一個「修正前會失敗」的回歸測試。
+
+| # | 優先 | codex 的發現 | 控制者判定 | 修正 |
+|---|---|---|---|---|
+| 1 | P1 | SMTP 伺服器接了連線但不回應時，`Mailer::send` 與 worker 對 handler 的 `await` 都沒有期限，一筆卡住會堵死所有 email／發票 job；`requeue_stale` 救不了卡住的 future | 真。lettre builder 沒設 timeout，`transport.send` 無期限；`run_once_with` 對 spawned handler 無期限；發票的 reqwest 已有 20 秒 | `2090fff` |
+| 2 | P1 | `expire_unpaid_orders` 的 SELECT 先算到期，`expire_one` 進交易後只靠 `cancel_in_tx` 查狀態；中間若 `PaymentInfoURL` 寫入未來的 `expire_at`，仍會取消訂單、歸還庫存，買家拿有效帳號去繳就變退款 | 真。`expire_one` 只有 payments UPDATE 與 `cancel_in_tx`，沒有在鎖內重算到期 | `ed44af6` |
+| 3 | P2 | `repay` 丟掉 `create_repayment` 回傳的 payment，再重新載入「最新一筆」組表單；並發的兩個 repay 會拿到同一筆（含對方選的付款方式） | 真。`routes/orders.rs:224-230` 確實如此 | `8d6ba63` |
+| 4 | P2 | `payment_instructions` 信只用 `payment_id` 載入就寄，排入與寄出之間訂單可能已取消或已由另一筆付清，等於叫客人去付已取消的訂單 | 真。`handlers.rs:165-183` 沒有狀態檢查 | `3b892cf` |
+| 5 | P2 | `invoices::mark_issued` 先提交，`invoice_issued` 通知信另開交易排程；兩者之間出錯 → 發票 issued、重試在「已開立」分支直接 return，通知信永遠不寄。違反規格 §9「寫入業務資料與排 job 在同一個交易」 | 真。這條就是 ledger L135／最終審查「擱置事項」裡被判 Defer 到計畫 4 的項目；規格明文要求同一交易，codex 又獨立抓到，改為現在修，**撤銷**那條 Defer | `9ed2522` |
+| 6 | P2 | `Mailer::Log` 用 `tracing::debug!(target: "mail_body")` 印整封內文，`RUST_LOG=debug` 就會印出密碼重設連結與訪客訂單 token，不是計畫決定 22 所說的明確 opt-in | 真。規格 §11：重設 token、guest_token 不得進 log | `4e7d017` |
+
+修正內容（一次派工 opus，`e4b2afa..4e7d017`，6 個 commit、9 個新測試，全部在本機分支、沒有 push）：
+
+1. `api/src/mail/mod.rs`：新增 `SMTP_TIMEOUT = 30s`，`Mailer::Smtp` 帶 `send_timeout`，lettre builder 加 `.timeout(...)`，`send` 用 `tokio::time::timeout` 包住整個 `transport.send`。`api/src/jobs/worker.rs`：新增 `JOB_TIMEOUT = 120s` 與 `run_once_with_timeout`，逾時就 `handle.abort()`、視為一次失敗嘗試（`max_attempts` 照樣生效）；`run_once_with` 簽名不變。測試：`smtp_send_times_out_instead_of_hanging`（假 SMTP 接了連線不回應）、`stuck_handler_is_aborted_and_counted_as_failed_attempt`。
+2. `api/src/jobs/scheduled.rs`：抽出 `deadline(created_at, max_expire)`（`max(expire_at)+2h`，否則 `created_at+3d`），`expire_one` 在 payments UPDATE 之後、`cancel_in_tx` 之前，於同一交易內 `FOR UPDATE OF o` 重算到期；沒到期就 rollback 回 `Ok(false)`。鎖順序仍是 payments → orders。測試：`expire_one_keeps_order_whose_deadline_was_extended`。
+3. `api/src/routes/orders.rs`：新增 `checkout_form_for_payment(state, &detail, &payment, guest_token)`，`repay` 用 `create_repayment` 剛回傳的那一筆組表單；`checkout_form_for` 保留給下單用。`domain/payments.rs` 加 `From<Payment> for PaymentRow`。測試：`repay_form_uses_the_attempt_it_just_created_not_the_latest_row`（修正前拿到 `…99` 而非 `…03`）、`concurrent_repays_get_distinct_attempts`（守衛用；`#[sqlx::test]` 是單執行緒 runtime，`tokio::join!` 不會像正式環境那樣交錯，修正前也會過——已記錄）。
+4. `api/src/jobs/handlers.rs`：`payment_instructions` 分支載入 payment 後，`payment.status != pending` 或 `order.status != pending_payment` 就記一行 info（只有 id 與狀態）並回 `Ok(())`（job 標 done、不寄）。測試：`payment_instructions_not_sent_after_order_cancelled`。
+5. `api/src/domain/invoices.rs`：`mark_issued` 改成 `mark_issued_in_tx`（唯一呼叫者）；`handlers.rs` 的發票成功分支改為同一交易內 `mark_issued_in_tx` ＋ `jobs::enqueue(invoice_issued)` 再 commit；`record_request` 維持先用 pool 寫入（規格 §14 送出前先存請求）。測試：`mark_issued_and_invoice_mail_roll_back_together`。
+6. `api/src/config.rs`：新增 `mail_log_body: bool`（環境變數 `MAIL_LOG_BODY`，只有 `1`／`true` 為開，`for_tests` 為 false）；`mail/mod.rs`：`Mailer::Log { log_body }`，內文只在旗標開著時輸出（`body_log_line` 純函式），等級由 debug 改為 info（旗標才是安全邊界，控制者裁決接受）。`docs/dev/` 的 `mail_body=debug` 說明改為 `MAIL_LOG_BODY=1`。測試：`mail_log_body_defaults_off_and_needs_explicit_opt_in`、`log_mailer_without_opt_in_does_not_format_body`。
+
+每條的回歸測試都先寫、先跑一次看它在修正前失敗（證據在修正報告裡）；第 1 條的兩個測試用 10 秒的 timeout 包住測試體，修正前是明確失敗而不是掛死。
+
+兩個新旋鈕，交給計畫 5 的部署清單：`MAIL_LOG_BODY` 正式環境不要設（未設＝關）；`JOB_TIMEOUT` 是每筆 job 的硬上限 120 秒（目前最慢的 handler：發票 reqwest 20 秒、SMTP 30 秒），未來有更慢的 job kind 要一起調。
+
+擱置／駁回：無（6 條全修）。
+
+codex 也註明 `git diff --check` 通過、在只讀沙箱裡沒有跑測試、沒有改任何檔案。
+
+同一階段控制者自己補的一條：Playwright 主流程在 `9ca51a3` 連續兩次在「取消訂單」那步逾時。trace 顯示 vite client 連上 2 ms 後就點了按鈕，路由模組還在載入——點擊落在 hydration 之前（冷的 vite dev 每次都重現），瀏覽器沒有任何 console／page error，之後的輪詢請求證明頁面最後有 hydrate。判定為測試自己的競態、不是程式缺陷；比照同檔案商品頁既有的做法，用 `expect().toPass()` 重試到確認按鈕出現（`e4b2afa`，test-only）。修正後 1 passed。
+
+控制者在 `4e7d017` 重跑全套閘門：`cargo fmt --check` 乾淨、`cargo clippy --all-targets -D warnings` 乾淨、`cargo test` 179／179（170 ＋ 新增 9）；`pnpm -C web check` 0 錯誤 0 警告、vitest 27／27、`pnpm -C web build` 成功；Playwright 主流程 1 passed（api ＋ web dev 起來跑，跑完關掉）。
+
+範圍複審（opus，`review-e4b2afa..4e7d017.diff`）：6 條全部 ADDRESSED，9 個新測試都在樹上且斷言符合要求；指名檢查 (a)–(h) 全部確認——逾時的 job 會被 `abort()`、只走一次 `mark_failed_attempt`、`last_error` 沒有 payload；`JOB_TIMEOUT`（120 秒）小於 `requeue_stale` 的 10 分鐘，不會把還在跑的 job 重排；到期重查在 payments 鎖之後、`orders` 列鎖之下，鎖順序 payments → orders 不變、沒有新的鎖類別、與 `apply_info`／`apply_return`／`cancel_in_tx`／`create_repayment` 都不成環；diff 沒有記錄任何秘密。Critical：無。
+
+複審另外提出：
+- **Important（測試面，不擋）**：既有測試 `expire_one_rolls_back_payments_update_when_order_not_cancellable` 的訂單是新建的（`expire_at` NULL），新的到期重查算出 `created_at+3d` 未到期就先 rollback，原本要守的「`cancel_in_tx` 回 false 也要 rollback」分支不再被跑到。控制者直接修：該測試的 `created_at` 調成 4 天前（`ecd2871`）。
+- Minor（擱置）：SMTP 送信被逾時取消後，lettre 連線池可能把一條協定已錯位的連線放回去（最多多失敗一次、之後自癒）；worker 的 `abort()` 沒有 await，handler 恰好在逾時同一瞬間完成時仍會被記成失敗並重試（極窄的窗口，發票的情況落在既有決定 29）；計畫文件「交給計畫 5」第 8 點原本寫 `mail_body=debug`，控制者改為 `MAIL_LOG_BODY`。
+- 第 6 條的「修正前失敗證據」只有編譯錯誤（新旗標修正前不存在）——控制者裁決接受：旗標本身就是修正，行為面的修正前失敗沒有可測的形狀。
+- 更正一處控制者的口誤：`RepayResponse.ecpay` 一直是 `CheckoutForm`（`Option` 的是 `CreateOrderResponse.ecpay`），repay 的錯誤傳播與修正前相同。

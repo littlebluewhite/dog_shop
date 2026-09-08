@@ -7093,7 +7093,7 @@ git commit -m "docs: 綠界 stage 手動測試步驟"
 5. **後台取消與退款**：`orders::cancel_in_tx(tx, id, "admin")` 可直接用（已逐列歸還）；`mark-refunded`：已付未出貨時歸還庫存（同 `cancel_in_tx` 的逐列迴圈，抽成共用函式）、`payments` 不動、顯示「請至綠界作廢發票」。取消已付款訂單時綠界的錢要老闆手動退。
 6. **儀表板「需退款」**：`orders.needs_refund = true` 的列（遲到付款、金額不符），加 `POST /api/admin/orders/{id}/clear-refund` 之類的「已處理」清除；`payments.raw` 有綠界原始 payload 可對帳。
 7. **`OrderDetail.payment` 是最新一筆**；後台訂單頁若要列出所有付款嘗試，寫 `payments::list_for_order(db, order_id)`（`PAYMENT_COLUMNS` 已抽出）。
-8. **Email 只記 log 的限制**：`Mailer::Log` 是開發用；計畫 5 部署文件要求正式環境設 `SMTP_HOST`／`SMTP_FROM`，且 `RUST_LOG` 不要開 `mail_body=debug`。
+8. **Email 只記 log 的限制**：`Mailer::Log` 是開發用；計畫 5 部署文件要求正式環境設 `SMTP_HOST`／`SMTP_FROM`，且不要設 `MAIL_LOG_BODY`（信件內文只在本機開發用 `MAIL_LOG_BODY=1` 打開；codex 審查修正 `4e7d017` 之後不再由 `RUST_LOG` 把關）。
 9. **Docker 映像**（計畫 5）：`reqwest` 用 `rustls-platform-verifier`，debian-slim 要 `apt-get install -y ca-certificates`，否則發票 API 會 TLS 失敗。
 10. **產品決定（交給使用者）**：規格 §5 的「沒有繳費期限就 `created_at` + 3 天」對從未到過綠界頁的訂單也適用；若要縮短（例如 2 小時），改 `jobs/scheduled.rs::expire_unpaid_orders` 的 SQL 與 `tests/jobs_worker.rs` 對應測試即可（與規格不同之處 33）。
 11. **發票重複 RelateNumber**：開立成功但沒存到時，重試會拿到綠界錯誤並在 5 次後標 failed；計畫 5 可加 `POST /B2CInvoice/GetIssue`（查 `RelateNumber`）讓重試先查再開。
