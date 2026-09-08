@@ -206,3 +206,17 @@ pub async fn get_detail(db: &PgPool, id: Uuid) -> Result<Option<AdminOrderDetail
         invoice,
     }))
 }
+
+/// 後台標記完成（規格 §4）：shipped → completed，不看 shipments.status（與規格不同之處 47）
+pub async fn complete(db: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+    let n = sqlx::query(
+        "UPDATE orders SET status = $2, completed_at = now() WHERE id = $1 AND status = $3",
+    )
+    .bind(id)
+    .bind(STATUS_COMPLETED)
+    .bind(STATUS_SHIPPED)
+    .execute(db)
+    .await?
+    .rows_affected();
+    Ok(n > 0)
+}
