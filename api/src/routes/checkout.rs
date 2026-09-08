@@ -8,12 +8,16 @@ use crate::{
     ecpay::{aio::CheckoutForm, logistics},
     error::{ApiError, ApiResult},
     extract::{AppJson, AppPath},
+    routes::rate_limit,
     state::AppState,
 };
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/checkout/cvs-map", axum::routing::post(cvs_map))
+        .route(
+            "/api/checkout/cvs-map",
+            rate_limit::anonymous_write(axum::routing::post(cvs_map)),
+        )
         .route("/api/checkout/cvs-store/{token}", get(cvs_store))
 }
 
@@ -51,6 +55,7 @@ async fn cvs_map(
     )))
 }
 
+/// 結帳頁用 ?store=<token> 還原門市顯示；過期或不存在 404
 async fn cvs_store(
     State(state): State<AppState>,
     AppPath(token): AppPath<String>,

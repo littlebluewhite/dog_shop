@@ -1,18 +1,11 @@
-use std::{sync::Arc, time::Duration};
-
 use axum::{
     Json, Router,
     extract::State,
     http::StatusCode,
-    response::IntoResponse,
     routing::{get, post},
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tower_governor::{
-    GovernorError, GovernorLayer, governor::GovernorConfigBuilder,
-    key_extractor::SmartIpKeyExtractor,
-};
 use uuid::Uuid;
 
 use crate::{
@@ -25,36 +18,17 @@ use crate::{
     ecpay::aio::{self, CheckoutForm},
     error::{ApiError, ApiResult},
     extract::{AppJson, AppPath, AppQuery},
+    routes::rate_limit,
     state::AppState,
 };
 
-/// `POST /api/orders` 是唯一開放給匿名者的寫入端點，未登入就能扣庫存；掛一個獨立的
-/// GovernorLayer 當減速帶（不與 auth 共用配額）：每個 IP 突發 10 次，之後每 12 秒補 1 次（約 5 次/分）。
-/// GET /api/orders/{id}、cancel 不限（結構同 routes/auth.rs:33-58）。
+/// `POST /api/orders`、`POST /api/checkout/cvs-map` 是僅有的兩個開放給匿名者的寫入端點：
+/// 前者未登入就能扣庫存，後者未登入就能寫一筆 `cvs_map_requests`。都掛
+/// `rate_limit::anonymous_write`（每個 IP 突發 10 次，之後每 12 秒補 1 次，配額各自獨立）。
+/// GET /api/orders/{id}、cancel、repay 不限（結構同 routes/auth.rs:33-58）。
 pub fn router() -> Router<AppState> {
-    let governor_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .key_extractor(SmartIpKeyExtractor)
-            .per_second(12)
-            .burst_size(10)
-            .finish()
-            .expect("governor config"),
-    );
-    // 定期清掉沒在用的 IP 記錄，不然記憶體只會長
-    let limiter = governor_conf.limiter().clone();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(60));
-            limiter.retain_recent();
-        }
-    });
-    let governor_layer = GovernorLayer::new(governor_conf).error_handler(|err| match err {
-        GovernorError::TooManyRequests { .. } => ApiError::RateLimited.into_response(),
-        other => ApiError::Internal(anyhow::anyhow!("rate limiter: {other:?}")).into_response(),
-    });
-
     Router::new()
-        .route("/api/orders", post(create).layer(governor_layer))
+        .route("/api/orders", rate_limit::anonymous_write(post(create)))
         .route("/api/orders/{id}", get(detail))
         .route("/api/orders/{id}/cancel", post(cancel))
         .route("/api/orders/{id}/repay", post(repay))

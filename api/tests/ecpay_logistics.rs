@@ -159,6 +159,38 @@ async fn cvs_map_rejects_bad_sub_type(pool: PgPool) {
     assert!(body["error"]["details"]["fields"]["sub_type"].is_string());
 }
 
+/// POST /api/checkout/cvs-map 掛的是獨立 governor（不跟 /api/orders 共用配額）：burst 10，
+/// 前 10 次都會成功（200），第 11 次 429。
+#[sqlx::test(migrations = "./migrations")]
+async fn cvs_map_is_rate_limited(pool: PgPool) {
+    let app = common::app(pool);
+    for _ in 0..10 {
+        let (status, body, _) = common::send(
+            &app,
+            common::req(
+                "POST",
+                "/api/checkout/cvs-map",
+                None,
+                Some(json!({ "sub_type": "FAMIC2C", "device": 1 })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            "/api/checkout/cvs-map",
+            None,
+            Some(json!({ "sub_type": "FAMIC2C", "device": 1 })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn map_reply_stores_selection_redirects_and_is_single_use(pool: PgPool) {
     let app = common::app(pool.clone());

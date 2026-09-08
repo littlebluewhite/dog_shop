@@ -11,5 +11,6 @@ pub mod health;
 pub mod me;
 pub mod orders;
 pub mod products;
+pub mod rate_limit;
 pub mod settings;
 pub mod uploads;
