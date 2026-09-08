@@ -310,7 +310,7 @@
 			<button type="submit" disabled={submitting || checking || lines.length === 0} class="w-full rounded bg-gray-900 px-4 py-2 text-white disabled:opacity-50">
 				{submitting ? '送出中…' : '送出訂單'}
 			</button>
-			<p class="text-xs text-gray-500">送出後會建立訂單並帶你到訂單頁；線上付款功能在下一個階段開放。</p>
+			<p class="text-xs text-gray-500">送出後會建立訂單並前往綠界付款頁；付款完成會回到訂單頁。</p>
 		</aside>
 	</form>
 {/if}

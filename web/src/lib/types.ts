@@ -215,6 +215,12 @@ export type OrderPayment = {
 	cvs_payment_no: string | null;
 	expire_at: string | null;
 };
+export type OrderInvoice = {
+	status: 'pending' | 'issued' | 'failed';
+	invoice_no: string | null;
+	invoice_date: string | null;
+	random_number: string | null;
+};
 export type OrderDetail = {
 	id: string;
 	order_no: string;
@@ -243,6 +249,7 @@ export type OrderDetail = {
 	items: OrderItem[];
 	shipment: OrderShipment | null;
 	payment: OrderPayment | null;
+	invoice: OrderInvoice | null;
 };
 export type OrderSummary = {
 	id: string;
@@ -252,3 +259,5 @@ export type OrderSummary = {
 	item_count: number;
 	created_at: string;
 };
+
+export type RepayResponse = { ecpay: EcpayForm };
