@@ -345,3 +345,14 @@ export type Dashboard = {
 	cvs_returned_items: AdminOrderListItem[];
 	invoice_failed_items: AdminOrderListItem[];
 };
+
+// ───── 商品匯入（計畫 5）─────
+export type ImportRowError = { row: number; column: string | null; message: string };
+export type ImportVariant = { row: number; option1_value: string | null; option2_value: string | null; sku: string | null; price: number; stock: number | null };
+export type ImportProduct = { external_ref: string; first_row: number; name: string; description: string | null; category: string | null; option1_name: string | null; option2_name: string | null; image_urls: string[]; variants: ImportVariant[] };
+export type ImportParsed = { sheet: string; header_row: number; row_count: number; products: ImportProduct[]; errors: ImportRowError[]; unmatched_columns: string[] };
+export type ImportPreview = { fingerprint: string; product_count: number; variant_count: number; new_count: number; update_count: number; parsed: ImportParsed };
+export type ImportWarning = { external_ref: string; row: number; message: string };
+export type ImportedProduct = { external_ref: string; id: string; name: string; created: boolean; images: number };
+export type ImportResult = { created: number; updated: number; products: ImportedProduct[]; warnings: ImportWarning[] };
+export type ImportCommit = { fingerprint: string; result: ImportResult };

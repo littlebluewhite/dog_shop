@@ -8,6 +8,7 @@
 		{ href: '/admin', label: '儀表板' },
 		{ href: '/admin/orders', label: '訂單' },
 		{ href: '/admin/products', label: '商品' },
+		{ href: '/admin/import', label: '匯入' },
 		{ href: '/admin/categories', label: '分類' },
 		{ href: '/admin/settings', label: '設定' }
 	];
