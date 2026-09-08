@@ -247,7 +247,12 @@ pub fn parse_create_response(cfg: &EcpayConfig, body: &str) -> Result<CreateOk, 
     match flag.trim() {
         "1" => {}
         "0" => return Err(CreateError::Rejected(truncate_chars(rest.trim(), 200))),
-        other => return Err(CreateError::Malformed(format!("開頭是 {other}"))),
+        other => {
+            return Err(CreateError::Malformed(format!(
+                "開頭是 {}",
+                truncate_chars(other, 200)
+            )));
+        }
     }
     let params: Vec<(String, String)> = form_urlencoded::parse(rest.as_bytes())
         .into_owned()
@@ -858,6 +863,14 @@ mod tests {
             parse_create_response(&cfg.ecpay, "1|MerchantID=2000933").unwrap_err(),
             CreateError::BadMac
         ));
+
+        // 反向代理的錯誤頁：`|` 前面那一大段不能無界進 log（審查 Minor 2）
+        let long = "x".repeat(5000) + "|y";
+        let CreateError::Malformed(m) = parse_create_response(&cfg.ecpay, &long).unwrap_err()
+        else {
+            panic!("應該是 Malformed");
+        };
+        assert!(m.chars().count() <= 210, "{}", m.chars().count());
 
         let mut fam = request();
         fam.sub_type = "FAMIC2C".to_string();

@@ -32,10 +32,18 @@ fn redirect(location: String) -> Response {
 }
 
 /// 綠界地圖選完，用買家瀏覽器把門市 POST 回來。失敗不回 400 純文字（買家會卡在錯誤頁），
-/// 改 303 回結帳頁帶 store_error（與規格不同之處 37）。token 不印進 log
-async fn map_reply(State(state): State<AppState>, body: String) -> Response {
+/// 改 303 回結帳頁帶 store_error（與規格不同之處 37）。token 不印進 log。
+/// body extractor 自己的拒絕（>64 KB、非 UTF-8）也要走同一條路，不能把裸錯誤丟給買家（審查 Minor 1）
+async fn map_reply(
+    State(state): State<AppState>,
+    body: Result<String, axum::extract::rejection::StringRejection>,
+) -> Response {
     let base = state.config.public_base_url.as_str();
     let fail = |reason: &str| redirect(format!("{base}/checkout?store_error={reason}"));
+    let Ok(body) = body else {
+        tracing::warn!("map-reply body 過大或不是 UTF-8");
+        return fail("invalid");
+    };
     let params = parse_form(&body);
     if params.len() > MAX_CALLBACK_FIELDS {
         tracing::warn!("map-reply 欄位太多");

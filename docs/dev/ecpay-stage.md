@@ -75,10 +75,12 @@
    enc = quote_plus(raw, safe="").lower()
    for a, b in [("%2d", "-"), ("%5f", "_"), ("%2e", "."), ("%21", "!"), ("%2a", "*"), ("%28", "("), ("%29", ")")]:
        enc = enc.replace(a, b)
+   enc = enc.replace("~", "%7e")  # python 的「永不編碼」集合含 ~，.NET 的 UrlEncode 會編成 %7e
    p["CheckMacValue"] = hashlib.md5(enc.encode()).hexdigest().upper()
    subprocess.run(["curl", "-s", "-d", "&".join(f"{k}={quote_plus(v)}" for k, v in p.items()), "http://localhost:8080/api/ecpay/logistics/status"])
    ```
 
+   這段只是把 `ecpay/mac.rs` 的規則用 python 重寫，權威在 `mac.rs`。
    `MerchantTradeNo` 改成你那筆的 `ecpay_merchant_trade_no`。回 `1|OK`；簽章錯回 400 `0|CheckMacValue Error`；找不到單回 `0|Unknown MerchantTradeNo`。
 7. 宅配：另下一筆宅配訂單付款後，`/admin/orders/<id>` 填貨運公司與單號 → 「已出貨」、Email log 有貨運公司與單號。
 8. 取消／退款／發票：待付款的訂單按「取消訂單」→ 已取消、庫存回來、付款嘗試「已作廢」；已付款的按「標記已退款」→ 已退款、庫存回來（已出貨的不回）；`UPDATE invoices SET status='failed', error='test' WHERE order_id=…` 後訂單頁出現紅字與「重開發票」，按下去幾秒後變已開立；`UPDATE orders SET needs_refund=true …` 後儀表板「需退款」有它，訂單頁「已處理退款」清掉。

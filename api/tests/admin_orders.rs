@@ -93,6 +93,9 @@ async fn admin_order_routes_require_admin(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) =
+        common::send(&app, common::req("GET", "/api/admin/dashboard", None, None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     let customer = common::customer_cookie(&app, &pool).await;
     assert_eq!(
@@ -103,6 +106,10 @@ async fn admin_order_routes_require_admin(pool: PgPool) {
         get(&app, &customer, &format!("/api/admin/orders/{id}"))
             .await
             .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        get(&app, &customer, "/api/admin/dashboard").await.0,
         StatusCode::FORBIDDEN
     );
 }
@@ -553,6 +560,33 @@ async fn ship_cvs_rejection_keeps_order_paid_records_reason_and_retries_with_nex
     );
     assert_eq!(d["status"], "shipped");
     assert_eq!(common::fake_logistics(&state).calls().len(), 4);
+
+    // 審查 I1：歷次建單請求都要留著，逾時重試時第一張才有跡可循
+    let raw: Value = sqlx::query_scalar("SELECT raw FROM shipments WHERE order_id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let numbers: Vec<String> = raw["create_requests"]
+        .as_array()
+        .expect("create_requests")
+        .iter()
+        .map(|r| r["MerchantTradeNo"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        numbers,
+        vec![
+            format!("{order_no}L01"),
+            format!("{order_no}L02"),
+            format!("{order_no}L03"),
+            format!("{order_no}L04"),
+        ]
+    );
+    assert_eq!(
+        raw["create_request"]["MerchantTradeNo"],
+        format!("{order_no}L04"),
+        "create_request 仍是最後一次"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -652,6 +686,72 @@ async fn ship_cvs_finishes_interrupted_transition_without_calling_ecpay_again(po
         1,
         "不再打綠界"
     );
+}
+
+/// 認領守衛（審查擱置 27）：別人正在建單（last_status_code='creating' 且未超過 2 分鐘）時擋下來；
+/// 卡超過 2 分鐘才允許重認領
+#[sqlx::test(migrations = "./migrations")]
+async fn ship_cvs_rejects_while_another_create_is_in_flight(pool: PgPool) {
+    let (app, state) = common::app_with_state(pool.clone());
+    let admin = common::admin_cookie(&app, &pool).await;
+    set_sender(&pool, None).await;
+    let (id, order_no, _) = place_order(&app, &pool, "cvs").await;
+    mark_paid(&pool, id).await;
+    // 別人剛認領走（request 還在往返途中）
+    sqlx::query(
+        "UPDATE shipments SET last_status_code = 'creating', updated_at = now() WHERE order_id = $1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = post(
+        &app,
+        &admin,
+        &format!("/api/admin/orders/{id}/ship-cvs"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]["details"]["fields"]["status"].is_string(),
+        "{body}"
+    );
+    assert!(
+        common::fake_logistics(&state).calls().is_empty(),
+        "認領沒過就不打綠界"
+    );
+    let no_request: bool = sqlx::query_scalar(
+        "SELECT raw -> 'create_request' IS NULL FROM shipments WHERE order_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(no_request, "認領沒過就不寫請求");
+
+    // 卡超過 2 分鐘：允許重認領
+    sqlx::query(
+        "UPDATE shipments SET updated_at = now() - interval '3 minutes' WHERE order_id = $1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (status, d) = post(
+        &app,
+        &admin,
+        &format!("/api/admin/orders/{id}/ship-cvs"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{d}");
+    assert_eq!(
+        d["shipment"]["ecpay_merchant_trade_no"],
+        format!("{order_no}L01")
+    );
+    assert_eq!(common::fake_logistics(&state).calls().len(), 1);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -815,34 +915,30 @@ async fn complete_marks_shipped_order_completed(pool: PgPool) {
 async fn mutating_admin_order_routes_require_admin(pool: PgPool) {
     let app = common::app(pool.clone());
     let (id, _, _) = place_order(&app, &pool, "home").await;
-    let (status, _, _) = common::send(
-        &app,
-        common::req(
-            "POST",
-            &format!("/api/admin/orders/{id}/ship-home"),
-            None,
-            Some(json!({ "carrier": "a", "tracking_no": "b" })),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
     let customer = common::customer_cookie(&app, &pool).await;
-    let (status, _) = post(
-        &app,
-        &customer,
-        &format!("/api/admin/orders/{id}/ship-cvs"),
-        json!({}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
 
-    // Task 7 加的四條路由（審查 Minor 6）也要驗
-    for action in ["cancel", "mark-refunded", "retry-invoice", "clear-refund"] {
+    // 八條動作路由（擱置 32、40）都要驗未登入 401 與非管理員 403
+    for action in [
+        "ship-cvs",
+        "ship-home",
+        "print-label",
+        "complete",
+        "cancel",
+        "mark-refunded",
+        "retry-invoice",
+        "clear-refund",
+    ] {
         let path = format!("/api/admin/orders/{id}/{action}");
+        // 權限檢查在 extractor、先於欄位驗證，但 body 保持合法比較不會誤讀失敗原因
+        let body = if action == "ship-home" {
+            json!({ "carrier": "a", "tracking_no": "b" })
+        } else {
+            json!({})
+        };
         let (status, _, _) =
-            common::send(&app, common::req("POST", &path, None, Some(json!({})))).await;
+            common::send(&app, common::req("POST", &path, None, Some(body.clone()))).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
-        let (status, _) = post(&app, &customer, &path, json!({})).await;
+        let (status, _) = post(&app, &customer, &path, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
     }
 }

@@ -5,7 +5,11 @@ use axum::{
     body::Body,
     http::{HeaderMap, Request, StatusCode, header},
 };
-use dog_shop_api::{domain::cvs_stores, ecpay::mac, jobs::scheduled};
+use dog_shop_api::{
+    domain::{cvs_stores, settings},
+    ecpay::mac,
+    jobs::scheduled,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
@@ -136,6 +140,29 @@ async fn cvs_map_returns_form_and_registers_token(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(registered.as_deref(), Some("FAMIC2C"));
+}
+
+/// 擱置 14：cvs-map 不在 CSRF 豁免前綴內，沒有 X-Requested-With 就 403（`tests/csrf.rs` 同一條規則）
+#[sqlx::test(migrations = "./migrations")]
+async fn cvs_map_requires_the_csrf_marker(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/checkout/cvs-map")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-forwarded-for", "127.0.0.1")
+        .body(Body::from(
+            json!({ "sub_type": "UNIMARTC2C", "device": 1 }).to_string(),
+        ))
+        .unwrap();
+    let (status, body, _) = common::send(&app, request).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "FORBIDDEN");
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM cvs_map_requests")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "沒有登記 token");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -316,15 +343,17 @@ async fn map_reply_rejects_unknown_expired_mismatched_or_incomplete(pool: PgPool
 #[sqlx::test(migrations = "./migrations")]
 async fn map_reply_ignores_csrf_headers_but_limits_body(pool: PgPool) {
     let app = common::app(pool);
-    // 超過 64 KB 的 body 直接被 DefaultBodyLimit 擋下
+    // 超過 64 KB 的 body 被 DefaultBodyLimit 擋下；買家看到的仍是 303 回結帳頁（審查 Minor 1）
     let huge = "x".repeat(70 * 1024);
-    let (status, _, _) = ecpay_post_raw(
+    let (status, _, headers) = ecpay_post_raw(
         &app,
         "/api/ecpay/logistics/map-reply",
         f(&[("ExtraData", &huge)]),
     )
     .await;
-    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let location = location(&headers);
+    assert!(location.ends_with("store_error=invalid"), "{location}");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -519,6 +548,42 @@ async fn status_callback_moves_forward_completes_on_pickup_and_never_regresses(p
     );
 }
 
+/// 擱置 17：取件通知只有在訂單是 shipped 時才把訂單轉 completed。
+/// 訂單被改回 paid（例如出貨後又被回退）之後，晚到的 2067 只動 shipments
+#[sqlx::test(migrations = "./migrations")]
+async fn pickup_does_not_complete_an_order_that_is_not_shipped(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let id = shipped_cvs_order(&app, &pool, "DS260908FFFFL01", "10041").await;
+
+    ecpay_post(
+        &app,
+        "/api/ecpay/logistics/status",
+        status_fields("DS260908FFFFL01", "10041", "2073", "商品配達買家取貨門市"),
+    )
+    .await;
+    assert_eq!(snapshot(&pool, id).await.0, "arrived");
+
+    sqlx::query("UPDATE orders SET status = 'paid', completed_at = NULL WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, text) = ecpay_post(
+        &app,
+        "/api/ecpay/logistics/status",
+        status_fields("DS260908FFFFL01", "10041", "2067", "消費者成功取件"),
+    )
+    .await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+    let (s, o, _, _, completed) = snapshot(&pool, id).await;
+    assert_eq!(
+        (s.as_str(), o.as_str(), completed),
+        ("picked_up", "paid", false),
+        "訂單不是已出貨就不轉已完成"
+    );
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn status_callback_returned_keeps_order_shipped_and_can_be_redelivered(pool: PgPool) {
     let app = common::app(pool.clone());
@@ -583,6 +648,99 @@ async fn status_callback_unknown_code_only_records_and_falls_back_to_logistics_i
     .await;
     assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
     assert_eq!(snapshot(&pool, id).await.0, "in_transit");
+}
+
+/// 審查 I2：`apply_status` 不能把建單認領用的 'creating' 標記換成綠界代碼 ——
+/// 代碼沒對照時 status 仍是 pending、ecpay_logistics_id 仍是 NULL，認領守衛就會整個失效，
+/// 同一秒內的第二次點擊會用 L02 再建一張真的物流單
+#[sqlx::test(migrations = "./migrations")]
+async fn status_notification_does_not_release_the_create_claim(pool: PgPool) {
+    let (app, state) = common::app_with_state(pool.clone());
+    let admin = common::admin_cookie(&app, &pool).await;
+    let mut all = settings::get_all(&pool).await.unwrap();
+    all.sender.name = "狗狗商店".to_string();
+    all.sender.phone = "0987654321".to_string();
+    settings::put_all(&pool, &all).await.unwrap();
+
+    let (variant, _) = common::active_product(&pool, "雞肉狗糧", 300, 5).await;
+    let token = common::cvs_store_token(&pool).await;
+    let (status, created, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            "/api/orders",
+            None,
+            Some(cvs_order_body(&variant.to_string(), &token)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = Uuid::parse_str(created["order_id"].as_str().unwrap()).unwrap();
+    let order_no: String = sqlx::query_scalar(
+        "UPDATE orders SET status = 'paid', paid_at = now() WHERE id = $1 RETURNING order_no",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // 建單認領中：request 還在往返途中
+    let mtn = format!("{order_no}L01");
+    sqlx::query(
+        "UPDATE shipments SET status = 'pending', last_status_code = 'creating',
+                ecpay_merchant_trade_no = $2, updated_at = now() WHERE order_id = $1",
+    )
+    .bind(id)
+    .bind(&mtn)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 這時候綠界推一則未對照代碼的通知進來
+    let (status, text) = ecpay_post(
+        &app,
+        "/api/ecpay/logistics/status",
+        status_fields(&mtn, "10040", "2101", "門市關轉店"),
+    )
+    .await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+    let (s, _, code, msg, _) = snapshot(&pool, id).await;
+    assert_eq!(
+        (s.as_str(), code.as_deref()),
+        ("pending", Some("creating")),
+        "認領標記不能被通知洗掉"
+    );
+    assert_eq!(msg.as_deref(), Some("門市關轉店"), "訊息照舊更新");
+    let raw: Value = sqlx::query_scalar("SELECT raw FROM shipments WHERE order_id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        raw["last_notification"]["RtnCode"], "2101",
+        "代碼仍完整保存"
+    );
+
+    // 另一個分頁按下「建立物流單」：認領守衛仍擋得住，不會再對綠界建一張
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            &format!("/api/admin/orders/{id}/ship-cvs"),
+            Some(&admin),
+            Some(json!({})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]["details"]["fields"]["status"].is_string(),
+        "{body}"
+    );
+    assert!(
+        common::fake_logistics(&state).calls().is_empty(),
+        "沒有第二次建單"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]

@@ -131,7 +131,10 @@ pub async fn apply_status(db: &PgPool, n: &StatusNotification) -> Result<StatusO
     let next =
         logistics::shipment_status_for(n.rtn_code).filter(|next| should_apply(&current, next));
     sqlx::query(
-        "UPDATE shipments SET status = COALESCE($2, status), last_status_code = $3, last_status_msg = $4,
+        // 認領中（'creating'）不能被通知的代碼換掉，否則 claim_create 的守衛會失效（審查 I2）
+        "UPDATE shipments SET status = COALESCE($2, status),
+                last_status_code = CASE WHEN last_status_code = 'creating' THEN last_status_code ELSE $3 END,
+                last_status_msg = $4,
                 raw = COALESCE(raw, '{}'::jsonb) || $5, updated_at = now()
          WHERE order_id = $1",
     )
@@ -200,11 +203,17 @@ pub fn next_merchant_trade_no(order_no: &str, previous: Option<&str>) -> Result<
             "物流單重試次數過多，請聯絡綠界客服",
         ));
     }
-    Ok(format!("{order_no}L{seq:02}"))
+    let result = format!("{order_no}L{seq:02}");
+    // 綠界的 MerchantTradeNo 上限 20 字（擱置 31）
+    if result.chars().count() > 20 {
+        return Err(ApiError::field("shipment", "訂單編號過長，無法建立物流單"));
+    }
+    Ok(result)
 }
 
 /// 建單前的認領：只有 pending、還沒有綠界單號、且不是別人正在建（或上次卡住超過 2 分鐘）才能建；
-/// 同時寫入這次的 MerchantTradeNo 與請求欄位（規格 §14 先存再送）。回 false = 別人正在建或已建過
+/// 同時寫入這次的 MerchantTradeNo 與請求欄位（規格 §14 先存再送）。回 false = 別人正在建或已建過。
+/// `raw.create_request` 是最後一次，`raw.create_requests` 累積歷次 —— 逾時重試時第一張單才有跡可循（審查 I1）
 pub async fn claim_create(
     db: &PgPool,
     order_id: Uuid,
@@ -213,14 +222,18 @@ pub async fn claim_create(
 ) -> Result<bool, sqlx::Error> {
     let n = sqlx::query(
         "UPDATE shipments SET ecpay_merchant_trade_no = $2, last_status_code = $3, last_status_msg = NULL,
-                raw = COALESCE(raw, '{}'::jsonb) || $4, updated_at = now()
+                raw = COALESCE(raw, '{}'::jsonb)
+                      || jsonb_build_object('create_request', $4::jsonb,
+                                            'create_requests',
+                                            COALESCE(raw -> 'create_requests', '[]'::jsonb) || jsonb_build_array($4::jsonb)),
+                updated_at = now()
          WHERE order_id = $1 AND status = $5 AND ecpay_logistics_id IS NULL
            AND (last_status_code IS DISTINCT FROM $3 OR updated_at < now() - interval '2 minutes')",
     )
     .bind(order_id)
     .bind(merchant_trade_no)
     .bind(CREATING)
-    .bind(json!({ "create_request": request_fields }))
+    .bind(request_fields)
     .bind(SHIPMENT_PENDING)
     .execute(db)
     .await?
@@ -391,6 +404,8 @@ mod tests {
             "DS260908ABLDL01"
         );
         assert!(next_merchant_trade_no("DS260908ABLD", Some("DS260908ABLDL99")).is_err());
+        // 綠界的 MerchantTradeNo 上限 20 字（擱置 31）
+        assert!(next_merchant_trade_no(&"A".repeat(20), None).is_err());
     }
 
     #[test]

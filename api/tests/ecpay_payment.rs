@@ -786,3 +786,71 @@ async fn info_after_cancel_is_ignored(pool: PgPool) {
         "只有下單時的 order_created，沒有寄出繳費資訊信"
     );
 }
+
+/// 擱置 38：買家改用信用卡重付並付掉了，第一次嘗試（ATM）的取號回呼才姍姍來遲 ——
+/// 那筆 payments 列仍是 pending，靠 apply_info 的訂單狀態守衛擋下來
+#[sqlx::test(migrations = "./migrations")]
+async fn payment_info_after_another_attempt_paid_is_ignored(pool: PgPool) {
+    let app = common::app(pool.clone());
+    let (order_id, mtn1, token) = place_order(&app, &pool, "atm").await;
+
+    let (status, body, _) = common::send(
+        &app,
+        common::req(
+            "POST",
+            &format!("/api/orders/{order_id}/repay?t={token}"),
+            None,
+            Some(json!({ "payment_method": "credit" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mtn2 = body["ecpay"]["fields"]["MerchantTradeNo"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // …02 付掉了 → 訂單 paid
+    let (status, text) = ecpay_post(
+        &app,
+        "/api/ecpay/payment/return",
+        return_fields(&mtn2, "700"),
+    )
+    .await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+    assert_eq!(order_row(&pool, order_id).await.0, "paid");
+    assert_eq!(
+        payment_row(&pool, &mtn1).await.0,
+        "pending",
+        "…01 仍是等待中，所以擋下來的是訂單狀態守衛而不是付款狀態守衛"
+    );
+
+    // …01 的 ATM 取號回呼現在才到
+    let fields = info_fields(
+        &mtn1,
+        &[
+            ("RtnCode", "2"),
+            ("PaymentType", "ATM_TAISHIN"),
+            ("BankCode", "812"),
+            ("vAccount", "1234567890123456"),
+            ("ExpireDate", "2026/09/09"),
+        ],
+    );
+    let (status, text) = ecpay_post(&app, "/api/ecpay/payment/info", fields).await;
+    assert_eq!((status, text.as_str()), (StatusCode::OK, "1|OK"));
+
+    let (vaccount, expire_at): (Option<String>, Option<DateTime<Utc>>) =
+        sqlx::query_as("SELECT atm_vaccount, expire_at FROM payments WHERE merchant_trade_no = $1")
+            .bind(&mtn1)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(vaccount.is_none(), "訂單已付款，不寫入繳費資訊");
+    assert!(expire_at.is_none());
+    let instructions = jobs_of(&pool, "send_email")
+        .await
+        .into_iter()
+        .filter(|(payload, _)| payload["template"] == "payment_instructions")
+        .count();
+    assert_eq!(instructions, 0, "不叫客人去付一筆已經付掉的訂單");
+}

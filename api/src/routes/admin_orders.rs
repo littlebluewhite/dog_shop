@@ -201,11 +201,11 @@ async fn ship_cvs(
     let body = match state.logistics.post_form(&url, &fields).await {
         Ok(body) => body,
         Err(e) => {
-            tracing::error!(order_id = %id, error = %format!("{e:#}"), "綠界建立物流單連線失敗");
+            tracing::error!(order_id = %id, merchant_trade_no = %req.merchant_trade_no, error = %format!("{e:#}"), "綠界建立物流單連線失敗");
             shipments::record_create_failure(&state.db, id, CREATE_ERROR, "連線綠界失敗", None)
                 .await?;
             return Err(ApiError::EcpayError(
-                "連線綠界物流失敗，請稍後再試".to_string(),
+                "連線綠界失敗，請先到綠界廠商後台確認這筆是否已建單，再決定要不要重試".to_string(),
             ));
         }
     };
@@ -220,7 +220,7 @@ async fn ship_cvs(
         }
         Err(err) => {
             // 綠界原文只進 log 與 shipments.last_status_msg，不進回應的 message（計畫 3 審查交接 2）
-            tracing::warn!(order_id = %id, error = %err, "綠界建立物流單失敗");
+            tracing::warn!(order_id = %id, merchant_trade_no = %req.merchant_trade_no, error = %err, "綠界建立物流單失敗");
             let msg = match &err {
                 CreateError::Rejected(m) => m.clone(),
                 CreateError::BadMac => {
