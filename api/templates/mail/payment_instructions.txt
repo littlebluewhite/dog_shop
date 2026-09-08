@@ -1,0 +1,13 @@
+{{ m.shop_name }}｜訂單 {{ m.order_no }} 的繳費資訊
+
+請在期限內完成付款，訂單才會成立出貨。
+付款方式：{{ m.method_label }}
+金額：{{ m.total }}
+{% if let Some(bank) = m.atm_bank_code %}銀行代碼：{{ bank }}
+{% endif %}{% if let Some(account) = m.atm_vaccount %}虛擬帳號：{{ account }}
+{% endif %}{% if let Some(code) = m.cvs_payment_no %}超商繳費代碼：{{ code }}（到超商多媒體機台輸入）
+{% endif %}繳費期限：{{ m.expire_at }}
+
+查看訂單：{{ m.order_url }}
+
+這封信由系統自動寄出。如有問題請聯絡 {{ m.contact }}。

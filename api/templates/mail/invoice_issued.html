@@ -1,0 +1,7 @@
+{% extends "mail/layout.html" %}
+{% block content %}
+<p>訂單 <strong>{{ m.order_no }}</strong> 的電子發票已開立。</p>
+<p>發票號碼：<strong>{{ m.invoice_no }}</strong><br>隨機碼：{{ m.random_number }}<br>開立時間：{{ m.invoice_date }}<br>金額：{{ m.total }}</p>
+<p>發票已依您選擇的方式（載具、統編或捐贈）處理；綠界也會另寄通知。</p>
+<p><a href="{{ m.order_url }}">查看訂單</a></p>
+{% endblock %}

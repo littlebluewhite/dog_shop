@@ -16,12 +16,21 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 argon2 = "0.6"
+askama = "0.16"
 axum = { version = "0.8", features = ["macros", "multipart"] }
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
 form_urlencoded = "1"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+lettre = { version = "0.11", default-features = false, features = [
+  "builder",
+  "hostname",
+  "pool",
+  "smtp-transport",
+  "tokio1",
+  "tokio1-rustls-tls",
+] }
 rand = "0.9"
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }

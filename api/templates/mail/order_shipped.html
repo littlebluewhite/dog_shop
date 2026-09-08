@@ -1,0 +1,10 @@
+{% extends "mail/layout.html" %}
+{% block content %}
+<p>訂單 <strong>{{ m.order_no }}</strong> 已出貨。</p>
+{% if m.cvs %}
+<p>您的包裹已送往 <strong>{{ m.store_name }}</strong>（{{ m.store_address }}）。到店後會收到超商簡訊，請憑手機末三碼取貨。</p>
+{% else %}
+<p>您的包裹已由 {{ m.carrier }} 寄出，單號 <strong>{{ m.tracking_no }}</strong>。</p>
+{% endif %}
+<p><a href="{{ m.order_url }}">查看訂單</a></p>
+{% endblock %}

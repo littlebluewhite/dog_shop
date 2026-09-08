@@ -1,0 +1,12 @@
+{{ m.shop_name }}｜訂單 {{ m.order_no }} 的電子發票已開立
+
+發票號碼：{{ m.invoice_no }}
+隨機碼：{{ m.random_number }}
+開立時間：{{ m.invoice_date }}
+金額：{{ m.total }}
+
+發票已依您選擇的方式（載具、統編或捐贈）處理；綠界也會另寄通知。
+
+查看訂單：{{ m.order_url }}
+
+這封信由系統自動寄出。如有問題請聯絡 {{ m.contact }}。

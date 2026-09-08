@@ -1,0 +1,16 @@
+{{ m.shop_name }}｜訂單 {{ m.order_no }} 已成立
+
+感謝您的購買，訂單內容如下：
+{% for item in m.items %}
+- {{ item.name }}（{{ item.label }}）× {{ item.quantity }}　{{ item.line_total }}
+{%- endfor %}
+
+商品小計 {{ m.subtotal }}
+運費 {{ m.shipping_fee }}
+總計 {{ m.total }}
+付款方式：{{ m.payment_label }}
+{{ m.shipping_desc }}
+
+查看訂單：{{ m.order_url }}
+
+這封信由系統自動寄出。如有問題請聯絡 {{ m.contact }}。

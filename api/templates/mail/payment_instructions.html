@@ -1,0 +1,10 @@
+{% extends "mail/layout.html" %}
+{% block content %}
+<p>訂單 <strong>{{ m.order_no }}</strong> 請在期限內完成付款，訂單才會成立出貨。</p>
+<p>付款方式：{{ m.method_label }}<br>金額：<strong>{{ m.total }}</strong></p>
+{% if let Some(bank) = m.atm_bank_code %}<p>銀行代碼：<strong>{{ bank }}</strong></p>{% endif %}
+{% if let Some(account) = m.atm_vaccount %}<p>虛擬帳號：<strong style="font-size:18px;">{{ account }}</strong></p>{% endif %}
+{% if let Some(code) = m.cvs_payment_no %}<p>超商繳費代碼：<strong style="font-size:18px;">{{ code }}</strong>（到超商多媒體機台輸入）</p>{% endif %}
+<p>繳費期限：{{ m.expire_at }}</p>
+<p><a href="{{ m.order_url }}">查看訂單</a></p>
+{% endblock %}

@@ -7,7 +7,12 @@ use axum::{
     body::Body,
     http::{HeaderMap, Request, StatusCode, header},
 };
-use dog_shop_api::{app, config::Config, state::AppState};
+use dog_shop_api::{
+    app,
+    config::Config,
+    mail::{Email, Mailer},
+    state::AppState,
+};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -15,18 +20,34 @@ use tower::ServiceExt;
 
 pub const TEST_ORIGIN: &str = "http://localhost:5173";
 
-/// 每個測試一個獨立的上傳目錄，避免互相干擾；設定用 Config::for_tests（stage 憑證、沒有 SMTP）
+/// 每個測試一個獨立的上傳目錄；設定用 Config::for_tests；Email 用 Mailer::Capture（用 sent_emails 讀）
 pub fn state(pool: PgPool) -> AppState {
     let upload_dir = std::env::temp_dir().join(format!("dog_shop_test_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&upload_dir).unwrap();
+    let (mailer, _) = Mailer::capture();
     AppState {
         db: pool,
         config: Arc::new(Config::for_tests(upload_dir)),
+        mailer: Arc::new(mailer),
     }
 }
 
 pub fn app(pool: PgPool) -> Router {
     app::router(state(pool))
+}
+
+/// 同時要打 API 又要看 job／信件的測試用這個
+pub fn app_with_state(pool: PgPool) -> (Router, AppState) {
+    let state = state(pool);
+    (app::router(state.clone()), state)
+}
+
+/// 測試裡寄出的信（Mailer::Capture）
+pub fn sent_emails(state: &AppState) -> Vec<Email> {
+    match &*state.mailer {
+        Mailer::Capture(sink) => sink.lock().unwrap().clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// 建一個像瀏覽器 fetch 送出的請求：帶 Origin、X-Requested-With、X-Forwarded-For（速率限制用）

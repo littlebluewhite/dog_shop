@@ -1,0 +1,14 @@
+{% extends "mail/layout.html" %}
+{% block content %}
+<p>您的訂單 <strong>{{ m.order_no }}</strong> 已成立，感謝您的購買。</p>
+<table style="width:100%;border-collapse:collapse;">
+{% for item in m.items %}
+<tr><td style="padding:4px 0;">{{ item.name }}（{{ item.label }}）× {{ item.quantity }}</td><td style="text-align:right;">{{ item.line_total }}</td></tr>
+{% endfor %}
+<tr><td style="padding-top:8px;border-top:1px solid #eee;">商品小計</td><td style="text-align:right;padding-top:8px;border-top:1px solid #eee;">{{ m.subtotal }}</td></tr>
+<tr><td>運費</td><td style="text-align:right;">{{ m.shipping_fee }}</td></tr>
+<tr><td style="font-weight:bold;">總計</td><td style="text-align:right;font-weight:bold;">{{ m.total }}</td></tr>
+</table>
+<p>付款方式：{{ m.payment_label }}<br>{{ m.shipping_desc }}</p>
+<p><a href="{{ m.order_url }}">查看訂單</a></p>
+{% endblock %}

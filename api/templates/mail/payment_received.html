@@ -1,0 +1,6 @@
+{% extends "mail/layout.html" %}
+{% block content %}
+<p>訂單 <strong>{{ m.order_no }}</strong> 已收到您的付款（{{ m.paid_at }}），金額 {{ m.total }}。</p>
+<p>商品準備好會再通知您出貨。</p>
+<p><a href="{{ m.order_url }}">查看訂單</a></p>
+{% endblock %}

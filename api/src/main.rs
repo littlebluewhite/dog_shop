@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
-use dog_shop_api::{app, config::Config, state::AppState};
+use dog_shop_api::{app, config::Config, jobs, mail, state::AppState};
 use dog_shop_api::{cli, db};
 use tracing_subscriber::EnvFilter;
 
@@ -34,10 +34,14 @@ async fn main() -> anyhow::Result<()> {
         };
     }
 
+    let mailer = Arc::new(mail::Mailer::from_config(&config)?);
     let state = AppState {
         db,
         config: config.clone(),
+        mailer,
     };
+    // 背景工作：jobs worker 與排程掃描（規格 §9），和 api 同一個行程、同一個連線池
+    jobs::start(state.clone());
     let app = app::router(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;

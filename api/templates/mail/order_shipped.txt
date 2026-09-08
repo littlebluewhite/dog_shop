@@ -1,0 +1,8 @@
+{{ m.shop_name }}｜訂單 {{ m.order_no }} 已出貨
+
+{% if m.cvs %}您的包裹已送往 {{ m.store_name }}（{{ m.store_address }}）。到店後會收到超商簡訊，請憑手機末三碼取貨。
+{% else %}您的包裹已由 {{ m.carrier }} 寄出，單號 {{ m.tracking_no }}。
+{% endif %}
+查看訂單：{{ m.order_url }}
+
+這封信由系統自動寄出。如有問題請聯絡 {{ m.contact }}。
