@@ -113,29 +113,29 @@ fn opt(s: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
-/// 「1,200」「NT$1200」「３５０」→ 1200；非負整數才算合法
+/// 「1,200」「NT$1,200」「1200元」「３５０」「99.0」「1,200.00」→ 1200／1200／1200／350／99／1200；
+/// 「1.5」「-1」「abc」「12a3」→ None
 fn parse_amount(raw: &str) -> Option<i64> {
-    let digits: String = raw
-        .chars()
-        .filter_map(|c| match c {
-            '0'..='9' => Some(c),
-            '\u{FF10}'..='\u{FF19}' => char::from_u32(c as u32 - 0xFF10 + '0' as u32),
-            _ => None,
-        })
-        .collect();
-    let has_minus = raw.contains('-') || raw.contains('－');
-    if digits.is_empty() || has_minus {
+    let mut s = String::new();
+    for c in raw.chars() {
+        match c {
+            '0'..='9' | '.' => s.push(c),
+            '\u{FF10}'..='\u{FF19}' => s.push(char::from_u32(c as u32 - 0xFF10 + '0' as u32)?),
+            '．' => s.push('.'),
+            '-' | '－' => return None,
+            c if c.is_whitespace() => {}
+            ',' | '，' | '$' | '＄' | 'N' | 'T' | 'n' | 't' | '元' => {}
+            _ => return None,
+        }
+    }
+    let (int_part, frac_part) = match s.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (s.as_str(), ""),
+    };
+    if int_part.is_empty() || !frac_part.chars().all(|c| c == '0') {
         return None;
     }
-    // 「1.5」這種小數不算整數
-    let cleaned: String = raw
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != ',')
-        .collect();
-    if cleaned.contains('.') && !cleaned.ends_with(".0") && !cleaned.ends_with(".00") {
-        return None;
-    }
-    digits.parse::<i64>().ok()
+    int_part.parse::<i64>().ok()
 }
 
 fn split_urls(raw: &str) -> Vec<String> {
@@ -671,5 +671,20 @@ mod tests {
         ]);
         let p = parse_grid("s", &g).unwrap();
         assert_eq!(p.errors[0].message, "圖片最多 9 張");
+    }
+
+    #[test]
+    fn parse_amount_handles_decimals_currency_and_fullwidth() {
+        assert_eq!(parse_amount("1,200"), Some(1200));
+        assert_eq!(parse_amount("NT$1,200"), Some(1200));
+        assert_eq!(parse_amount("1200元"), Some(1200));
+        assert_eq!(parse_amount("３５０"), Some(350));
+        assert_eq!(parse_amount("99.0"), Some(99));
+        assert_eq!(parse_amount("1,200.00"), Some(1200));
+        assert_eq!(parse_amount("1.5"), None);
+        assert_eq!(parse_amount("-1"), None);
+        assert_eq!(parse_amount("abc"), None);
+        assert_eq!(parse_amount(""), None);
+        assert_eq!(parse_amount("12a3"), None);
     }
 }
