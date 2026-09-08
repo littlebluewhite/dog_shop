@@ -48,7 +48,7 @@ pub fn app_with_state(pool: PgPool) -> (Router, AppState) {
 pub fn sent_emails(state: &AppState) -> Vec<Email> {
     match &*state.mailer {
         Mailer::Capture(sink) => sink.lock().unwrap().clone(),
-        _ => Vec::new(),
+        _ => panic!("測試的 AppState 要用 Mailer::Capture"),
     }
 }
 
