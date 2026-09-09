@@ -11,15 +11,25 @@
 
 ## 開發快速開始
 
+在 repo 根目錄：
+
+```
+cp -n .env.example .env    # 只有第一次；-n＝絕不覆蓋既有的 .env（它不進 git，只有這一份）
+make run
+```
+
+`make run` 會開好開發資料庫、編譯後端、（第一次）裝前端套件，然後同時跑後端與前端；Ctrl+C 兩個一起停。其他目標：`make db`、`make api`、`make web`、`make build`。
+
+想手動分開跑：
+
 ```
 docker compose -f deploy/docker-compose.dev.yml up -d db
-cp .env.example .env
 export PATH="$HOME/.cargo/bin:$PATH"
 cargo run --manifest-path api/Cargo.toml
 pnpm -C web dev
 ```
 
-api 監聽 `:8080`，web dev 監聽 `:5173`（Vite 轉發 `/api`、`/uploads`）。建立第一個管理員帳號：`ADMIN_PASSWORD=<密碼> cargo run --manifest-path api/Cargo.toml -- create-admin <email>`。
+api 監聽 `:8080`，web dev 監聽 `:5173`（Vite 轉發 `/api`、`/uploads`）。瀏覽器與 curl 要用 `http://localhost:5173`，Vite 只綁 IPv6，`127.0.0.1:5173` 會連不上。建立第一個管理員帳號：`ADMIN_PASSWORD=<密碼> cargo run --manifest-path api/Cargo.toml -- create-admin <email>`。
 
 ## 測試
 
