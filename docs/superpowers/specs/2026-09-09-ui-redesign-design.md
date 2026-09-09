@@ -53,9 +53,10 @@
 | `--color-brand-soft` | `#FFE9CF` | 選中的分頁/導覽底、hover 底、看板內的白膠囊 hover |
 | `--color-surface` | `#F1F5FA` | 圖片底、表格條紋、表頭底、次要區塊底 |
 | `--color-line` | `#D9E1EC` | 邊框、分隔線 |
-| `--color-success` / `--color-success-soft` | `#1E9E62` / `#E3F6EC` | 已付款、成功 |
+| `--color-success` / `--color-success-soft` | `#15734A` / `#E3F6EC` | 已付款、成功（深綠是為了 12px 字在淡綠底上也有 4.5:1） |
 | `--color-warning` / `--color-warning-soft` | `#B45309` / `#FFF4DB` | 待付款、庫存調整、注意 |
-| `--color-danger` / `--color-danger-soft` | `#D63C3C` / `#FDE8E8` | 錯誤、已售完、取消動作 |
+| `--color-danger` / `--color-danger-soft` | `#B91C1C` / `#FDE8E8` | 錯誤、已售完、取消動作（同上，深紅才過 4.5:1） |
+| `--color-brand-light` | `#FFA640` | 只給看板上的散落小形狀用 |
 
 **對比規則**（WCAG AA）：
 - 橘色 `#FF8A00` 在白底上對比只有約 2.4:1，**永遠不用來寫字**，只用來當底色與裝飾。
@@ -269,7 +270,7 @@
 
 **Task 1 之後有一個「看圖關卡」**：做完 token、元件庫、外框、favicon、首頁後，先截首頁與商品列表（手機 + 桌機）給使用者看，使用者說可以才做其他頁。方向錯在這裡改最便宜。
 
-**示意用資料（只在開發 DB）**：開發 DB 現在的商品不是沒有圖片（`E2E 狗糧 …`）就是圖片 404（`PROBE5-*`）。為了看圖，Task 1 會用本機 ImageMagick 產 8 張純色（淡橘、淡灰藍、淡綠…）加大字的 PNG，透過開發用 api（`localhost:8080`）的後台圖片上傳與商品 API 建 8 個上架商品，名稱前綴 `DEMO-UI `，分兩個分類。這些只存在開發 DB，永遠不匯入正式環境；記到記憶檔的「開發 DB 雜物」清單。
+**示意用資料（只在開發 DB）**：開發 DB 現在的商品不是沒有圖片（`E2E 狗糧 …`）就是圖片 404（`PROBE5-*`）。為了看圖，Task 1 會用本機 ImageMagick 產 8 張純色（淡橘、淡灰藍、淡綠…）加大字的 PNG，透過開發用 api（`localhost:8080`）的後台圖片上傳與商品 API 建 8 個上架商品（名稱用自然的雜貨品名，方便看圖；辨識靠網址代稱前綴 `demo-ui-`、SKU 前綴 `DEMO-UI-`、描述第一行「示意商品」），分兩個分類「生活雜貨」「文具小物」。這些只存在開發 DB，永遠不匯入正式環境；記到記憶檔的「開發 DB 雜物」清單。
 
 ## 9. Playwright 定位契約（一字不能改）
 
@@ -291,12 +292,13 @@
 ## 11. 執行方式
 
 - 分支 `worktree-ui-redesign`（工作區 `.claude/worktrees/ui-redesign`），每個 task 一個 commit，**不 push、不開 PR**，做完回報 commit 讓使用者決定。
-- 依 `superpowers:writing-plans` 寫實作計畫，再用 `superpowers:subagent-driven-development` 一個 task 一個子代理執行；task 順序：
-  1. token、`app.css`、`app.html`、11 個 ui 元件、favicon、外框（頁首頁尾）、首頁、`ProductCard`、示意資料 → **看圖關卡**
-  2. 商品列表、`Pagination`、`EmptyState` 套用
-  3. 商品頁 `ProductView`
-  4. 購物車
-  5. 結帳（含 `AddressFields`、`InvoiceFields`）
-  6. 訂單頁、會員中心、登入/註冊/忘記/重設、錯誤頁、`Toasts`
-  7. 後台（版面不動、套元件）
-  8. 全部 gates + e2e + codex review
+- 依 `superpowers:writing-plans` 寫實作計畫（`docs/superpowers/plans/2026-09-09-ui-redesign.md`），再用 `superpowers:subagent-driven-development` 一個 task 一個子代理執行；task 順序：
+  1. token、`app.css`、`app.html`、11 個 ui 元件（含純邏輯測試）
+  2. favicon、外框（頁首頁尾）、首頁、`ProductCard`、示意資料、截圖腳本 → **看圖關卡**
+  3. 商品列表、`Pagination`
+  4. 商品頁 `ProductView`
+  5. 購物車
+  6. 結帳（含 `AddressFields`、`InvoiceFields`）
+  7. 訂單頁、會員中心、登入/註冊/忘記/重設、錯誤頁、`Toasts`
+  8. 後台（版面不動、套元件）
+  9. 總驗收：全部 gates + e2e；之後控制者跑 codex review
