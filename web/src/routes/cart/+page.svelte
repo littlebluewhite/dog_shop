@@ -87,7 +87,7 @@
 			</div>
 		</Alert>
 	{/if}
-	<div class="mt-4 grid gap-6 lg:grid-cols-[1fr_20rem]">
+	<div class="mt-4 flex flex-col gap-6 lg:grid lg:grid-cols-[1fr_20rem]">
 		<ul class="space-y-3">
 			{#each cart.lines as line (line.variant_id)}
 				{@const p = problemOf(line.variant_id)}
