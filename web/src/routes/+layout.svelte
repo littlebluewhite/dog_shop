@@ -22,7 +22,7 @@
 	}
 
 	const navLink =
-		'inline-flex h-10 items-center gap-1.5 rounded-full px-3 text-sm font-medium text-ink transition-colors duration-150 hover:bg-surface';
+		'inline-flex h-10 items-center gap-1.5 rounded-full px-2 whitespace-nowrap text-sm font-medium text-ink transition-colors duration-150 hover:bg-surface md:px-3';
 </script>
 
 <svelte:head>

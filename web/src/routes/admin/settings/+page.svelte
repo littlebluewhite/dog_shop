@@ -57,7 +57,9 @@
 		<div class="space-y-3">
 			<Field label="商店名稱" type="text" bind:value={form.shop.name} error={errors['shop.name']} />
 			<Field label="簡介（選填）" error={errors['shop.description']}>
-				<textarea bind:value={form.shop.description} rows="3" class="input mt-1"></textarea>
+				{#snippet children({ errorId, invalid })}
+					<textarea bind:value={form.shop.description} rows="3" class="input mt-1" aria-invalid={invalid} aria-describedby={errorId}></textarea>
+				{/snippet}
 			</Field>
 			<div class="grid grid-cols-2 gap-3">
 				<Field label="聯絡 Email" type="email" bind:value={form.shop.contact_email} error={errors['shop.contact_email']} />
@@ -90,10 +92,12 @@
 	<Card title="退貨門市（買家未取件時退回這裡）">
 		<div class="grid grid-cols-3 gap-3">
 			<Field label="超商" error={errors['return_store.sub_type']}>
-				<select bind:value={form.return_store.sub_type} class="input mt-1">
-					<option value="">未設定</option>
-					{#each cvsTypes as t (t)}<option value={t}>{CVS_LABELS[t]}</option>{/each}
-				</select>
+				{#snippet children({ errorId, invalid })}
+					<select bind:value={form.return_store.sub_type} class="input mt-1" aria-invalid={invalid} aria-describedby={errorId}>
+						<option value="">未設定</option>
+						{#each cvsTypes as t (t)}<option value={t}>{CVS_LABELS[t]}</option>{/each}
+					</select>
+				{/snippet}
 			</Field>
 			<Field label="門市代號" type="text" bind:value={form.return_store.store_id} error={errors['return_store.store_id']} />
 			<Field label="門市名稱" type="text" bind:value={form.return_store.store_name} error={errors['return_store.store_name']} />

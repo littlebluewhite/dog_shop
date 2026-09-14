@@ -26,16 +26,20 @@
 
 <div class="grid grid-cols-3 gap-3">
 	<Field label="縣市" error={err('city')}>
-		<select bind:value={address.city} onchange={onCity} class="input mt-1">
-			<option value="">請選擇</option>
-			{#each cityOptions as c (c)}<option value={c}>{c}</option>{/each}
-		</select>
+		{#snippet children({ errorId, invalid })}
+			<select bind:value={address.city} onchange={onCity} class="input mt-1" aria-invalid={invalid} aria-describedby={errorId}>
+				<option value="">請選擇</option>
+				{#each cityOptions as c (c)}<option value={c}>{c}</option>{/each}
+			</select>
+		{/snippet}
 	</Field>
 	<Field label="鄉鎮市區" error={err('district')}>
-		<select bind:value={address.district} onchange={onDistrict} class="input mt-1">
-			<option value="">請選擇</option>
-			{#each districtOptions as d (d)}<option value={d}>{d}</option>{/each}
-		</select>
+		{#snippet children({ errorId, invalid })}
+			<select bind:value={address.district} onchange={onDistrict} class="input mt-1" aria-invalid={invalid} aria-describedby={errorId}>
+				<option value="">請選擇</option>
+				{#each districtOptions as d (d)}<option value={d}>{d}</option>{/each}
+			</select>
+		{/snippet}
 	</Field>
 	<Field label="郵遞區號" type="text" bind:value={address.postal_code} inputmode="numeric" error={err('postal_code')} />
 </div>

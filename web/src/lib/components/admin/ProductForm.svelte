@@ -244,12 +244,14 @@
 			<Field class="md:col-span-2" label="商品名稱" bind:value={name} required error={errors.name} />
 			<Field label="網址代稱（空白會自動產生）" bind:value={slug} placeholder="例如 chicken-food" error={errors.slug} />
 			<Field label="分類" error={errors.category_id}>
-				<select bind:value={category_id} class="input mt-1">
-					<option value="">未分類</option>
-					{#each categories as c (c.id)}
-						<option value={c.id}>{c.name}</option>
-					{/each}
-				</select>
+				{#snippet children({ errorId, invalid })}
+					<select bind:value={category_id} class="input mt-1" aria-invalid={invalid} aria-describedby={errorId}>
+						<option value="">未分類</option>
+						{#each categories as c (c.id)}
+							<option value={c.id}>{c.name}</option>
+						{/each}
+					</select>
+				{/snippet}
 			</Field>
 			<Field label="狀態">
 				<select bind:value={status} class="input mt-1">

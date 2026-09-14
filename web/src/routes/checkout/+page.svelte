@@ -289,7 +289,9 @@
 					</div>
 					{#if errors.payment_method}<p class="field-error">{errors.payment_method}</p>{/if}
 					<Field label="備註（選填，最多 200 字）" error={errors.note}>
-						<textarea bind:value={form.note} rows="2" class="input mt-1"></textarea>
+						{#snippet children({ errorId, invalid })}
+							<textarea bind:value={form.note} rows="2" class="input mt-1" aria-invalid={invalid} aria-describedby={errorId}></textarea>
+						{/snippet}
 					</Field>
 				</div>
 			</Card>

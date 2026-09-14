@@ -11,7 +11,7 @@
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
 	import { postToEcpay } from '$lib/ecpay';
 	import { formatDate, twd } from '$lib/format';
-	import { CVS_LABELS, INVOICE_LABELS, INVOICE_STATUS_LABELS, ORDER_STATUS_LABELS, PAYMENT_LABELS, PAYMENT_STATUS_LABELS, SHIPMENT_STATUS_LABELS } from '$lib/labels';
+	import { CVS_LABELS, INVOICE_LABELS, INVOICE_STATUS_LABELS, PAYMENT_LABELS, PAYMENT_STATUS_LABELS, SHIPMENT_STATUS_LABELS } from '$lib/labels';
 	import { toast } from '$lib/toast.svelte';
 	import type { EcpayForm } from '$lib/types';
 	import type { PageProps } from './$types';

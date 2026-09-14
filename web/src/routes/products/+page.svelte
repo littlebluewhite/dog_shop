@@ -24,13 +24,13 @@
 		<Icon name="search" class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-soft" />
 		<input name="q" value={data.q} placeholder="搜尋商品" class="input pl-10" />
 	</label>
-	<select name="category" value={data.category} class="input">
+	<select name="category" value={data.category} class="input" aria-label="分類">
 		<option value="">全部分類</option>
 		{#each data.categories as c (c.id)}
 			<option value={c.slug}>{c.name}</option>
 		{/each}
 	</select>
-	<select name="sort" value={data.sort} class="input">
+	<select name="sort" value={data.sort} class="input" aria-label="排序">
 		<option value="newest">最新</option>
 		<option value="price_asc">價格低到高</option>
 		<option value="price_desc">價格高到低</option>

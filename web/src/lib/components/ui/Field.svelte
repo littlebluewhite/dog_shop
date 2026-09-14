@@ -13,13 +13,12 @@
 		...rest
 	}: {
 		label: string;
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		value?: any;
 		error?: string;
 		hint?: string;
 		class?: string;
-		children?: Snippet;
-	} & Omit<HTMLInputAttributes, 'value' | 'class'> = $props();
+		children?: Snippet<[{ errorId: string | undefined; invalid: 'true' | undefined }]>;
+	} & Omit<HTMLInputAttributes, 'value' | 'class' | 'children'> = $props();
 
 	const uid = $props.id();
 	const errorId = $derived(error ? `${uid}-error` : undefined);
@@ -30,7 +29,7 @@
 	<label class="block">
 		<span class="field-label">{label}</span>
 		{#if children}
-			{@render children()}
+			{@render children({ errorId, invalid: error ? 'true' : undefined })}
 		{:else}
 			<input class="input mt-1" bind:value aria-invalid={error ? 'true' : undefined} aria-describedby={errorId} {...rest} />
 		{/if}
