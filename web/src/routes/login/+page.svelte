@@ -2,6 +2,11 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api, ApiError } from '$lib/api';
+	import Alert from '$lib/components/ui/Alert.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import Icon from '$lib/components/ui/Icon.svelte';
 	import type { User } from '$lib/types';
 
 	let email = $state('');
@@ -35,40 +40,21 @@
 
 <svelte:head><title>登入</title></svelte:head>
 
-<div class="mx-auto max-w-sm">
-	<h1 class="mb-6 text-2xl font-bold">登入</h1>
-	<form onsubmit={submit} class="space-y-4">
-		<label class="block text-sm text-gray-700">
-			Email
-			<input
-				type="email"
-				bind:value={email}
-				required
-				autocomplete="email"
-				class="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-base"
-			/>
-		</label>
-		<label class="block text-sm text-gray-700">
-			密碼
-			<input
-				type="password"
-				bind:value={password}
-				required
-				autocomplete="current-password"
-				class="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-base"
-			/>
-		</label>
-		{#if error}<p class="text-sm text-red-600">{error}</p>{/if}
-		<button
-			type="submit"
-			disabled={submitting}
-			class="w-full rounded bg-gray-900 px-4 py-2 text-white disabled:opacity-50"
-		>
-			{submitting ? '登入中…' : '登入'}
-		</button>
-	</form>
-	<div class="mt-4 flex justify-between text-sm text-gray-600">
-		<a href="/register" class="underline">還沒有帳號？註冊</a>
-		<a href="/forgot-password" class="underline">忘記密碼？</a>
-	</div>
+<div class="mx-auto mt-4 max-w-sm">
+	<Card class="p-6 md:p-8">
+		<div class="mb-6 flex flex-col items-center gap-3 text-center">
+			<span class="flex h-14 w-14 items-center justify-center rounded-full bg-brand-soft text-brand"><Icon name="tag" size={28} /></span>
+			<h1 class="text-2xl font-extrabold tracking-tight">登入</h1>
+		</div>
+		<form onsubmit={submit} class="space-y-4">
+			<Field label="Email" type="email" bind:value={email} required autocomplete="email" />
+			<Field label="密碼" type="password" bind:value={password} required autocomplete="current-password" />
+			{#if error}<Alert tone="danger">{error}</Alert>{/if}
+			<Button type="submit" size="lg" class="w-full" disabled={submitting}>{submitting ? '登入中…' : '登入'}</Button>
+		</form>
+		<div class="mt-5 flex justify-between text-sm">
+			<a href="/register" class="link">還沒有帳號？註冊</a>
+			<a href="/forgot-password" class="link">忘記密碼？</a>
+		</div>
+	</Card>
 </div>

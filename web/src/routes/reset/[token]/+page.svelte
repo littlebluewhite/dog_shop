@@ -2,6 +2,11 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api, ApiError } from '$lib/api';
+	import Alert from '$lib/components/ui/Alert.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import Icon from '$lib/components/ui/Icon.svelte';
 	import { toast } from '$lib/toast.svelte';
 
 	let password = $state('');
@@ -34,20 +39,17 @@
 
 <svelte:head><title>重設密碼</title></svelte:head>
 
-<div class="mx-auto max-w-sm">
-	<h1 class="mb-6 text-2xl font-bold">重設密碼</h1>
-	<form onsubmit={submit} class="space-y-4" novalidate>
-		<label class="block text-sm text-gray-700">
-			新密碼（至少 8 碼）
-			<input type="password" bind:value={password} required autocomplete="new-password" class="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-base" />
-		</label>
-		<label class="block text-sm text-gray-700">
-			再輸入一次
-			<input type="password" bind:value={confirm} required autocomplete="new-password" class="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-base" />
-		</label>
-		{#if error}<p class="text-sm text-red-600">{error}</p>{/if}
-		<button type="submit" disabled={submitting} class="w-full rounded bg-gray-900 px-4 py-2 text-white disabled:opacity-50">
-			{submitting ? '更新中…' : '更新密碼'}
-		</button>
-	</form>
+<div class="mx-auto mt-4 max-w-sm">
+	<Card class="p-6 md:p-8">
+		<div class="mb-6 flex flex-col items-center gap-3 text-center">
+			<span class="flex h-14 w-14 items-center justify-center rounded-full bg-brand-soft text-brand"><Icon name="tag" size={28} /></span>
+			<h1 class="text-2xl font-extrabold tracking-tight">重設密碼</h1>
+		</div>
+		<form onsubmit={submit} class="space-y-4" novalidate>
+			<Field label="新密碼（至少 8 碼）" type="password" bind:value={password} required autocomplete="new-password" />
+			<Field label="再輸入一次" type="password" bind:value={confirm} required autocomplete="new-password" />
+			{#if error}<Alert tone="danger">{error}</Alert>{/if}
+			<Button type="submit" size="lg" class="w-full" disabled={submitting}>{submitting ? '更新中…' : '更新密碼'}</Button>
+		</form>
+	</Card>
 </div>

@@ -1,6 +1,11 @@
 <script lang="ts">
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api, ApiError } from '$lib/api';
+	import Alert from '$lib/components/ui/Alert.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import Icon from '$lib/components/ui/Icon.svelte';
 	import type { User } from '$lib/types';
 
 	let email = $state('');
@@ -38,33 +43,20 @@
 
 <svelte:head><title>註冊</title></svelte:head>
 
-<div class="mx-auto max-w-sm">
-	<h1 class="mb-6 text-2xl font-bold">註冊</h1>
-	<form onsubmit={submit} class="space-y-4" novalidate>
-		<label class="block text-sm text-gray-700">
-			Email
-			<input type="email" bind:value={email} required autocomplete="email" class="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-base" />
-			{#if errors.email}<span class="text-red-600">{errors.email}</span>{/if}
-		</label>
-		<label class="block text-sm text-gray-700">
-			密碼（至少 8 碼）
-			<input type="password" bind:value={password} required autocomplete="new-password" class="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-base" />
-			{#if errors.password}<span class="text-red-600">{errors.password}</span>{/if}
-		</label>
-		<label class="block text-sm text-gray-700">
-			姓名
-			<input type="text" bind:value={name} required autocomplete="name" class="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-base" />
-			{#if errors.name}<span class="text-red-600">{errors.name}</span>{/if}
-		</label>
-		<label class="block text-sm text-gray-700">
-			手機（選填）
-			<input type="tel" bind:value={phone} autocomplete="tel" placeholder="09xxxxxxxx" class="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-base" />
-			{#if errors.phone}<span class="text-red-600">{errors.phone}</span>{/if}
-		</label>
-		{#if message}<p class="text-sm text-red-600">{message}</p>{/if}
-		<button type="submit" disabled={submitting} class="w-full rounded bg-gray-900 px-4 py-2 text-white disabled:opacity-50">
-			{submitting ? '註冊中…' : '建立帳號'}
-		</button>
-	</form>
-	<p class="mt-4 text-sm text-gray-600">已經有帳號？<a href="/login" class="underline">登入</a></p>
+<div class="mx-auto mt-4 max-w-sm">
+	<Card class="p-6 md:p-8">
+		<div class="mb-6 flex flex-col items-center gap-3 text-center">
+			<span class="flex h-14 w-14 items-center justify-center rounded-full bg-brand-soft text-brand"><Icon name="tag" size={28} /></span>
+			<h1 class="text-2xl font-extrabold tracking-tight">註冊</h1>
+		</div>
+		<form onsubmit={submit} class="space-y-4" novalidate>
+			<Field label="Email" type="email" bind:value={email} required autocomplete="email" error={errors.email} />
+			<Field label="密碼（至少 8 碼）" type="password" bind:value={password} required autocomplete="new-password" error={errors.password} />
+			<Field label="姓名" type="text" bind:value={name} required autocomplete="name" error={errors.name} />
+			<Field label="手機（選填）" type="tel" bind:value={phone} autocomplete="tel" placeholder="09xxxxxxxx" error={errors.phone} />
+			{#if message}<Alert tone="danger">{message}</Alert>{/if}
+			<Button type="submit" size="lg" class="w-full" disabled={submitting}>{submitting ? '註冊中…' : '建立帳號'}</Button>
+		</form>
+		<p class="mt-5 text-center text-sm">已經有帳號？<a href="/login" class="link">登入</a></p>
+	</Card>
 </div>

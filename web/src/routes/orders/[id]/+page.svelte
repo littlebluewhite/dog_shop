@@ -2,6 +2,11 @@
 	import { onMount, untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { api, ApiError } from '$lib/api';
+	import Alert from '$lib/components/ui/Alert.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
 	import { postToEcpay } from '$lib/ecpay';
 	import { formatDate, twd } from '$lib/format';
 	import { CVS_LABELS, INVOICE_LABELS, ORDER_STATUS_LABELS, PAYMENT_LABELS } from '$lib/labels';
@@ -78,138 +83,131 @@
 
 <svelte:head><title>訂單 {o.order_no}</title></svelte:head>
 
-<div class="flex flex-wrap items-baseline justify-between gap-2">
-	<h1 class="text-2xl font-bold">訂單 {o.order_no}</h1>
-	<span class="rounded bg-gray-900 px-3 py-1 text-sm text-white">{ORDER_STATUS_LABELS[o.status]}</span>
-</div>
-<p class="mt-1 text-sm text-gray-500">成立時間 {formatDate(o.created_at)}</p>
+<PageHeader title={`訂單 ${o.order_no}`} subtitle={`成立時間 ${formatDate(o.created_at)}`}>
+	<StatusBadge status={o.status} />
+</PageHeader>
 
 {#if o.status === 'pending_payment'}
-	<div class="mt-4 rounded border border-yellow-300 bg-yellow-50 p-4 text-sm">
-		<p class="font-medium">付款方式：{PAYMENT_LABELS[o.payment?.method ?? 'credit']}</p>
+	<Alert tone="warning" class="mt-5" title={`付款方式：${PAYMENT_LABELS[o.payment?.method ?? 'credit']}`}>
 		{#if o.payment && hasPaymentInfo(o)}
 			{#if o.payment.atm_vaccount}
 				<p class="mt-2">請在期限內轉帳到下面的帳號：</p>
-				<p class="mt-1 text-lg font-bold">銀行代碼 {o.payment.atm_bank_code}　帳號 {o.payment.atm_vaccount}</p>
+				<p class="mt-1 text-[22px] font-bold tabular-nums">銀行代碼 {o.payment.atm_bank_code}　帳號 {o.payment.atm_vaccount}</p>
 			{:else}
 				<p class="mt-2">請到超商多媒體機台輸入繳費代碼：</p>
-				<p class="mt-1 text-lg font-bold">{o.payment.cvs_payment_no}</p>
+				<p class="mt-1 text-[22px] font-bold tabular-nums">{o.payment.cvs_payment_no}</p>
 			{/if}
-			<p class="mt-1 text-gray-700">
+			<p class="mt-1">
 				金額 {twd(o.payment.amount)}{#if o.payment.expire_at}　繳費期限 {formatDate(o.payment.expire_at)}{/if}
 			</p>
 			{#if paymentExpired(o)}
-				<p class="mt-2 text-red-700">繳費期限已過，請重新付款。</p>
+				<p class="mt-2 font-medium text-danger">繳費期限已過，請重新付款。</p>
 			{:else}
-				<p class="mt-2 text-gray-700">繳費後幾分鐘內會收到付款成功的 Email；重新整理這一頁也會更新。</p>
+				<p class="mt-2">繳費後幾分鐘內會收到付款成功的 Email；重新整理這一頁也會更新。</p>
 			{/if}
 		{:else if pollTimedOut}
-			<p class="mt-1 text-gray-700">還沒收到付款結果。請重新整理這一頁；若已付款卻沒更新，請聯絡我們。</p>
+			<p class="mt-1">還沒收到付款結果。請重新整理這一頁；若已付款卻沒更新，請聯絡我們。</p>
 		{:else}
-			<p class="mt-1 text-gray-700">等候綠界付款結果中…（每 3 秒自動更新）</p>
+			<p class="mt-1">等候綠界付款結果中…（每 3 秒自動更新）</p>
 		{/if}
 		<div class="mt-3 flex flex-wrap items-center gap-2">
-			<label class="text-gray-700" for="repay-method">重新付款：</label>
-			<select id="repay-method" bind:value={repayMethod} class="rounded border border-gray-300 px-2 py-1">
+			<label for="repay-method">重新付款：</label>
+			<select id="repay-method" bind:value={repayMethod} class="input w-auto">
 				{#each enabledPayments as m (m)}
 					<option value={m}>{PAYMENT_LABELS[m]}</option>
 				{/each}
 			</select>
-			<button type="button" onclick={repay} disabled={repaying} class="rounded bg-gray-900 px-3 py-1 text-white disabled:opacity-50">
-				{repaying ? '前往付款…' : '前往付款'}
-			</button>
+			<Button size="sm" onclick={repay} disabled={repaying}>{repaying ? '前往付款…' : '前往付款'}</Button>
 		</div>
-	</div>
+	</Alert>
 {:else if o.status === 'paid' || o.status === 'shipped' || o.status === 'completed'}
-	<div class="mt-4 rounded border border-green-300 bg-green-50 p-4 text-sm">
-		<p class="font-medium">已付款{#if o.paid_at}（{formatDate(o.paid_at)}）{/if}，目前狀態：{ORDER_STATUS_LABELS[o.status]}</p>
-	</div>
+	<Alert tone="success" class="mt-5">
+		<p class="font-semibold">已付款{#if o.paid_at}（{formatDate(o.paid_at)}）{/if}，目前狀態：{ORDER_STATUS_LABELS[o.status]}</p>
+	</Alert>
 {:else if o.status === 'refunded'}
-	<div class="mt-4 rounded border border-gray-300 bg-gray-50 p-4 text-sm">這筆訂單已退款。</div>
+	<Alert tone="info" class="mt-5">這筆訂單已退款。</Alert>
 {:else if o.status === 'cancelled'}
-	<div class="mt-4 rounded border border-gray-300 bg-gray-50 p-4 text-sm">
-		這筆訂單已取消{#if o.cancelled_at}（{formatDate(o.cancelled_at)}）{/if}。
-	</div>
+	<Alert tone="info" class="mt-5">這筆訂單已取消{#if o.cancelled_at}（{formatDate(o.cancelled_at)}）{/if}。</Alert>
 {/if}
 
 {#if data.token && !data.user}
-	<p class="mt-4 text-sm text-gray-600">請把這個網頁的網址存起來，之後用它查看訂單。</p>
+	<p class="mt-4 text-sm text-ink-soft">請把這個網頁的網址存起來，之後用它查看訂單。</p>
 {/if}
 
-<section class="mt-6 rounded border border-gray-200 bg-white">
-	<ul class="divide-y divide-gray-100">
+<Card class="mt-6 p-0 md:p-0">
+	<ul class="divide-y divide-line">
 		{#each o.items as item, i (i)}
 			<li class="flex items-center gap-4 p-4">
-				<div class="h-14 w-14 shrink-0 overflow-hidden rounded bg-gray-100">
+				<div class="h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-surface">
 					{#if item.image_path}<img src={item.image_path} alt="" class="h-full w-full object-cover" />{/if}
 				</div>
 				<div class="min-w-0 flex-1">
-					<div class="font-medium">{item.product_name}</div>
-					<div class="text-sm text-gray-500">{item.variant_label} × {item.quantity}</div>
+					<div class="font-semibold">{item.product_name}</div>
+					<div class="text-sm text-ink-soft">{item.variant_label} × {item.quantity}</div>
 				</div>
 				<div class="text-right">
-					<div>{twd(item.line_total)}</div>
-					<div class="text-xs text-gray-500">單價 {twd(item.unit_price)}</div>
+					<div class="font-semibold tabular-nums">{twd(item.line_total)}</div>
+					<div class="text-xs text-ink-soft">單價 {twd(item.unit_price)}</div>
 				</div>
 			</li>
 		{/each}
 	</ul>
-	<div class="space-y-1 border-t border-gray-200 p-4 text-sm">
-		<div class="flex justify-between"><span>商品小計</span><span>{twd(o.subtotal)}</span></div>
-		<div class="flex justify-between"><span>運費</span><span>{o.shipping_fee === 0 ? '免運' : twd(o.shipping_fee)}</span></div>
-		<div class="flex justify-between text-base font-bold"><span>總計</span><span>{twd(o.total)}</span></div>
+	<div class="space-y-1 border-t border-line p-4 text-sm">
+		<div class="flex justify-between"><span>商品小計</span><span class="tabular-nums">{twd(o.subtotal)}</span></div>
+		<div class="flex justify-between"><span>運費</span><span class="tabular-nums">{o.shipping_fee === 0 ? '免運' : twd(o.shipping_fee)}</span></div>
+		<div class="flex justify-between text-base font-bold"><span>總計</span><span class="tabular-nums">{twd(o.total)}</span></div>
 	</div>
-</section>
+</Card>
 
 <div class="mt-6 grid gap-4 md:grid-cols-2">
-	<section class="rounded border border-gray-200 bg-white p-4 text-sm">
-		<h2 class="font-medium">取貨</h2>
-		<p class="mt-2">{o.recipient_name}　{o.recipient_phone}</p>
-		{#if o.shipment?.method === 'cvs'}
-			<p class="mt-1">超商取貨：{o.shipment.cvs_sub_type ? CVS_LABELS[o.shipment.cvs_sub_type] : ''} {o.shipment.cvs_store_name}</p>
-			<p class="text-gray-600">{o.shipment.cvs_store_address}</p>
-		{:else if o.shipment}
-			<p class="mt-1">宅配：{o.shipment.home_postal_code} {o.shipment.home_city}{o.shipment.home_district}{o.shipment.home_street}</p>
-			{#if o.shipment.tracking_no}<p class="text-gray-600">{o.shipment.carrier} {o.shipment.tracking_no}</p>{/if}
-		{/if}
-		{#if o.note}<p class="mt-2 text-gray-600">備註：{o.note}</p>{/if}
-	</section>
-	<section class="rounded border border-gray-200 bg-white p-4 text-sm">
-		<h2 class="font-medium">發票</h2>
-		<p class="mt-2">{INVOICE_LABELS[o.invoice_type]}</p>
-		{#if o.invoice_type === 'company'}
-			<p class="text-gray-600">統編 {o.invoice_tax_id}｜{o.invoice_title}</p>
-			<p class="text-gray-600">{o.invoice_address}</p>
-		{:else if o.invoice_type === 'donation'}
-			<p class="text-gray-600">愛心碼 {o.invoice_love_code}</p>
-		{:else if o.invoice_carrier_num}
-			<p class="text-gray-600">載具 {o.invoice_carrier_num}</p>
-		{:else}
-			<p class="text-gray-600">發票會寄到 {o.email}</p>
-		{/if}
-		{#if o.invoice?.status === 'issued'}
-			<p class="mt-2">
-				發票號碼 {o.invoice.invoice_no}　隨機碼 {o.invoice.random_number}{#if o.invoice.invoice_date}　{formatDate(o.invoice.invoice_date)}{/if}
-			</p>
-		{:else if o.status === 'paid' || o.status === 'shipped' || o.status === 'completed'}
-			<p class="mt-2 text-gray-500">發票開立中，開好會通知您。</p>
-		{/if}
-	</section>
+	<Card title="取貨">
+		<div class="text-sm">
+			<p>{o.recipient_name}　{o.recipient_phone}</p>
+			{#if o.shipment?.method === 'cvs'}
+				<p class="mt-1">超商取貨：{o.shipment.cvs_sub_type ? CVS_LABELS[o.shipment.cvs_sub_type] : ''} {o.shipment.cvs_store_name}</p>
+				<p class="text-ink-soft">{o.shipment.cvs_store_address}</p>
+			{:else if o.shipment}
+				<p class="mt-1">宅配：{o.shipment.home_postal_code} {o.shipment.home_city}{o.shipment.home_district}{o.shipment.home_street}</p>
+				{#if o.shipment.tracking_no}<p class="text-ink-soft">{o.shipment.carrier} {o.shipment.tracking_no}</p>{/if}
+			{/if}
+			{#if o.note}<p class="mt-2 text-ink-soft">備註：{o.note}</p>{/if}
+		</div>
+	</Card>
+	<Card title="發票">
+		<div class="text-sm">
+			<p>{INVOICE_LABELS[o.invoice_type]}</p>
+			{#if o.invoice_type === 'company'}
+				<p class="text-ink-soft">統編 {o.invoice_tax_id}｜{o.invoice_title}</p>
+				<p class="text-ink-soft">{o.invoice_address}</p>
+			{:else if o.invoice_type === 'donation'}
+				<p class="text-ink-soft">愛心碼 {o.invoice_love_code}</p>
+			{:else if o.invoice_carrier_num}
+				<p class="text-ink-soft">載具 {o.invoice_carrier_num}</p>
+			{:else}
+				<p class="text-ink-soft">發票會寄到 {o.email}</p>
+			{/if}
+			{#if o.invoice?.status === 'issued'}
+				<p class="mt-2">
+					發票號碼 {o.invoice.invoice_no}　隨機碼 {o.invoice.random_number}{#if o.invoice.invoice_date}　{formatDate(o.invoice.invoice_date)}{/if}
+				</p>
+			{:else if o.status === 'paid' || o.status === 'shipped' || o.status === 'completed'}
+				<p class="mt-2 text-ink-soft">發票開立中，開好會通知您。</p>
+			{/if}
+		</div>
+	</Card>
 </div>
 
 {#if o.status === 'pending_payment'}
 	<div class="mt-6 flex items-center gap-3">
 		{#if confirming}
-			<button type="button" onclick={cancel} disabled={cancelling} class="rounded bg-red-600 px-4 py-2 text-white disabled:opacity-50">
-				{cancelling ? '取消中…' : '確定取消這筆訂單'}
-			</button>
-			<button type="button" onclick={() => (confirming = false)} class="rounded border border-gray-300 px-4 py-2">保留</button>
+			<Button variant="danger" onclick={cancel} disabled={cancelling}>{cancelling ? '取消中…' : '確定取消這筆訂單'}</Button>
+			<Button variant="secondary" onclick={() => (confirming = false)}>保留</Button>
 		{:else}
-			<button type="button" onclick={() => (confirming = true)} class="text-sm text-gray-600 underline">取消訂單</button>
+			<Button variant="ghost" size="sm" onclick={() => (confirming = true)}>取消訂單</Button>
 		{/if}
 	</div>
 {/if}
 
 {#if data.user}
-	<p class="mt-8 text-sm"><a href="/account/orders" class="underline">回我的訂單</a></p>
+	<p class="mt-8 text-sm"><a href="/account/orders" class="link">回我的訂單</a></p>
 {/if}

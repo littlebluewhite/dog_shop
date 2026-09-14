@@ -2,6 +2,10 @@
 	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { api, ApiError } from '$lib/api';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import { toast } from '$lib/toast.svelte';
 	import type { User } from '$lib/types';
 	import type { PageProps } from './$types';
@@ -44,36 +48,20 @@
 
 <svelte:head><title>個人資料</title></svelte:head>
 
-<h1 class="text-2xl font-bold">個人資料</h1>
-<p class="mt-1 text-sm text-gray-500">{data.user?.email}</p>
+<PageHeader title="個人資料" subtitle={data.user?.email} />
 
 <form onsubmit={save} class="mt-6 max-w-md space-y-4" novalidate>
-	<label class="block text-sm text-gray-700">
-		姓名
-		<input type="text" bind:value={name} class="mt-1 w-full rounded border border-gray-300 px-3 py-2" />
-		{#if errors.name}<span class="text-red-600">{errors.name}</span>{/if}
-	</label>
-	<label class="block text-sm text-gray-700">
-		手機
-		<input type="tel" bind:value={phone} placeholder="09xxxxxxxx" class="mt-1 w-full rounded border border-gray-300 px-3 py-2" />
-		{#if errors.phone}<span class="text-red-600">{errors.phone}</span>{/if}
-	</label>
-
-	<fieldset class="rounded border border-gray-200 p-4">
-		<legend class="px-1 text-sm text-gray-600">更改密碼（不改就留空）</legend>
-		<label class="block text-sm text-gray-700">
-			目前密碼
-			<input type="password" bind:value={currentPassword} autocomplete="current-password" class="mt-1 w-full rounded border border-gray-300 px-3 py-2" />
-			{#if errors.current_password}<span class="text-red-600">{errors.current_password}</span>{/if}
-		</label>
-		<label class="mt-3 block text-sm text-gray-700">
-			新密碼（至少 8 碼）
-			<input type="password" bind:value={newPassword} autocomplete="new-password" class="mt-1 w-full rounded border border-gray-300 px-3 py-2" />
-			{#if errors.new_password}<span class="text-red-600">{errors.new_password}</span>{/if}
-		</label>
-	</fieldset>
-
-	<button type="submit" disabled={saving} class="rounded bg-gray-900 px-4 py-2 text-white disabled:opacity-50">
-		{saving ? '儲存中…' : '儲存'}
-	</button>
+	<Card>
+		<div class="space-y-4">
+			<Field label="姓名" type="text" bind:value={name} error={errors.name} />
+			<Field label="手機" type="tel" bind:value={phone} placeholder="09xxxxxxxx" error={errors.phone} />
+		</div>
+	</Card>
+	<Card title="更改密碼（不改就留空）">
+		<div class="space-y-4">
+			<Field label="目前密碼" type="password" bind:value={currentPassword} autocomplete="current-password" error={errors.current_password} />
+			<Field label="新密碼（至少 8 碼）" type="password" bind:value={newPassword} autocomplete="new-password" error={errors.new_password} />
+		</div>
+	</Card>
+	<Button type="submit" disabled={saving}>{saving ? '儲存中…' : '儲存'}</Button>
 </form>

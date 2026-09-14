@@ -2,6 +2,11 @@
 	import { invalidateAll } from '$app/navigation';
 	import { api, ApiError } from '$lib/api';
 	import AddressFields from '$lib/components/AddressFields.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import { toast } from '$lib/toast.svelte';
 	import type { Address, AddressInput, HomeAddressInput } from '$lib/types';
 	import type { PageProps } from './$types';
@@ -80,58 +85,57 @@
 
 <svelte:head><title>常用地址</title></svelte:head>
 
-<div class="flex items-center justify-between">
-	<h1 class="text-2xl font-bold">常用地址</h1>
+<PageHeader title="常用地址">
 	{#if editing === null && data.addresses.length < 10}
-		<button type="button" onclick={startNew} class="rounded bg-gray-900 px-4 py-2 text-sm text-white">新增地址</button>
+		<Button onclick={startNew}>新增地址</Button>
 	{/if}
-</div>
+</PageHeader>
 
 {#if editing !== null}
-	<form onsubmit={save} class="mt-4 max-w-lg space-y-3 rounded border border-gray-200 bg-white p-4" novalidate>
-		<div class="grid grid-cols-2 gap-3">
-			<label class="block text-sm text-gray-700">
-				收件人
-				<input type="text" bind:value={form.recipient_name} class="mt-1 w-full rounded border border-gray-300 px-3 py-2" />
-				{#if errors.recipient_name}<span class="text-red-600">{errors.recipient_name}</span>{/if}
-			</label>
-			<label class="block text-sm text-gray-700">
-				手機
-				<input type="tel" bind:value={form.phone} placeholder="09xxxxxxxx" class="mt-1 w-full rounded border border-gray-300 px-3 py-2" />
-				{#if errors.phone}<span class="text-red-600">{errors.phone}</span>{/if}
-			</label>
-		</div>
-		<AddressFields bind:address={addressPart} {errors} />
-		<label class="flex items-center gap-2 text-sm text-gray-700">
-			<input type="checkbox" bind:checked={form.is_default} /> 設為預設地址
-		</label>
-		<div class="flex gap-2">
-			<button type="submit" disabled={saving} class="rounded bg-gray-900 px-4 py-2 text-white disabled:opacity-50">{saving ? '儲存中…' : '儲存'}</button>
-			<button type="button" onclick={cancel} class="rounded border border-gray-300 px-4 py-2">取消</button>
-		</div>
+	<form onsubmit={save} class="mt-4 max-w-lg" novalidate>
+		<Card>
+			<div class="space-y-3">
+				<div class="grid grid-cols-2 gap-3">
+					<Field label="收件人" type="text" bind:value={form.recipient_name} error={errors.recipient_name} />
+					<Field label="手機" type="tel" bind:value={form.phone} placeholder="09xxxxxxxx" error={errors.phone} />
+				</div>
+				<AddressFields bind:address={addressPart} {errors} />
+				<label class="flex items-center gap-2 text-sm">
+					<input type="checkbox" bind:checked={form.is_default} class="accent-brand" /> 設為預設地址
+				</label>
+				<div class="flex gap-2">
+					<Button type="submit" disabled={saving}>{saving ? '儲存中…' : '儲存'}</Button>
+					<Button variant="secondary" onclick={cancel}>取消</Button>
+				</div>
+			</div>
+		</Card>
 	</form>
 {/if}
 
 {#if data.addresses.length === 0 && editing === null}
-	<p class="mt-4 text-gray-600">還沒有常用地址。</p>
+	<p class="mt-4 text-ink-soft">還沒有常用地址。</p>
 {:else}
-	<ul class="mt-4 divide-y divide-gray-200 rounded border border-gray-200 bg-white">
+	<ul class="mt-4 space-y-3">
 		{#each data.addresses as a (a.id)}
-			<li class="flex flex-wrap items-center gap-3 p-4">
-				<div class="min-w-0 flex-1 text-sm">
-					<div class="font-medium">
-						{a.recipient_name}
-						{#if a.is_default}<span class="ml-2 rounded bg-gray-900 px-2 py-0.5 text-xs text-white">預設</span>{/if}
+			<li>
+				<Card>
+					<div class="flex flex-wrap items-center gap-3">
+						<div class="min-w-0 flex-1 text-sm">
+							<div class="flex items-center gap-2 font-semibold">
+								{a.recipient_name}
+								{#if a.is_default}<Badge tone="brand">預設</Badge>{/if}
+							</div>
+							<div class="text-ink-soft">{a.phone}</div>
+							<div class="text-ink-soft">{a.postal_code} {a.city}{a.district}{a.street}</div>
+						</div>
+						<Button variant="ghost" size="sm" onclick={() => startEdit(a)}>編輯</Button>
+						{#if confirmDeleteId === a.id}
+							<Button variant="danger" size="sm" onclick={() => remove(a.id)}>確定刪除？</Button>
+						{:else}
+							<Button variant="ghost" size="sm" onclick={() => (confirmDeleteId = a.id)}>刪除</Button>
+						{/if}
 					</div>
-					<div class="text-gray-600">{a.phone}</div>
-					<div class="text-gray-600">{a.postal_code} {a.city}{a.district}{a.street}</div>
-				</div>
-				<button type="button" onclick={() => startEdit(a)} class="text-sm underline">編輯</button>
-				{#if confirmDeleteId === a.id}
-					<button type="button" onclick={() => remove(a.id)} class="text-sm text-red-600 underline">確定刪除？</button>
-				{:else}
-					<button type="button" onclick={() => (confirmDeleteId = a.id)} class="text-sm text-gray-500 underline">刪除</button>
-				{/if}
+				</Card>
 			</li>
 		{/each}
 	</ul>

@@ -1,7 +1,10 @@
 <script lang="ts">
 	import Pagination from '$lib/components/Pagination.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
 	import { formatDate, twd } from '$lib/format';
-	import { ORDER_STATUS_LABELS } from '$lib/labels';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -9,24 +12,26 @@
 
 <svelte:head><title>我的訂單</title></svelte:head>
 
-<h1 class="text-2xl font-bold">我的訂單</h1>
+<PageHeader title="我的訂單" />
 
 {#if data.result.items.length === 0}
-	<p class="mt-4 text-gray-600">還沒有訂單。<a href="/products" class="underline">去逛逛</a></p>
+	<div class="mt-4">
+		<EmptyState message="還沒有訂單。"><Button variant="secondary" href="/products">去逛逛</Button></EmptyState>
+	</div>
 {:else}
-	<div class="mt-4 overflow-x-auto rounded border border-gray-200 bg-white">
-		<table class="w-full text-sm">
-			<thead class="bg-gray-50 text-left text-gray-600">
-				<tr><th class="p-3">訂單編號</th><th class="p-3">日期</th><th class="p-3">狀態</th><th class="p-3">件數</th><th class="p-3 text-right">金額</th></tr>
+	<div class="card mt-4 overflow-x-auto p-0 md:p-0">
+		<table class="table">
+			<thead>
+				<tr><th>訂單編號</th><th>日期</th><th>狀態</th><th>件數</th><th class="text-right">金額</th></tr>
 			</thead>
 			<tbody>
 				{#each data.result.items as o (o.id)}
-					<tr class="border-t border-gray-100">
-						<td class="p-3"><a href={`/orders/${o.id}`} class="font-medium underline">{o.order_no}</a></td>
-						<td class="p-3 text-gray-600">{formatDate(o.created_at)}</td>
-						<td class="p-3">{ORDER_STATUS_LABELS[o.status]}</td>
-						<td class="p-3">{o.item_count}</td>
-						<td class="p-3 text-right">{twd(o.total)}</td>
+					<tr>
+						<td><a href={`/orders/${o.id}`} class="link">{o.order_no}</a></td>
+						<td class="text-ink-soft">{formatDate(o.created_at)}</td>
+						<td><StatusBadge status={o.status} /></td>
+						<td class="tabular-nums">{o.item_count}</td>
+						<td class="text-right tabular-nums">{twd(o.total)}</td>
 					</tr>
 				{/each}
 			</tbody>
