@@ -1,4 +1,8 @@
 <script lang="ts">
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import { productStatusTone } from '$lib/components/ui/status';
 	import Pagination from '$lib/components/Pagination.svelte';
 	import { formatDate, priceRange } from '$lib/format';
 	import type { PageProps } from './$types';
@@ -10,56 +14,54 @@
 
 <svelte:head><title>商品管理</title></svelte:head>
 
-<div class="flex items-center justify-between">
-	<h1 class="text-2xl font-bold">商品</h1>
-	<a href="/admin/products/new" class="rounded bg-gray-900 px-4 py-2 text-sm text-white">新增商品</a>
-</div>
+<PageHeader title="商品">
+	<Button href="/admin/products/new">新增商品</Button>
+</PageHeader>
 
-<form method="GET" class="mt-4 flex flex-wrap gap-2">
-	<input name="q" value={data.q} placeholder="搜尋名稱" class="rounded border border-gray-300 px-3 py-2 text-sm" />
-	<select name="status" value={data.status} class="rounded border border-gray-300 px-3 py-2 text-sm">
+<form method="GET" class="mt-5 grid grid-cols-2 gap-2 md:flex md:flex-wrap">
+	<input name="q" value={data.q} placeholder="搜尋名稱" class="input col-span-2 md:w-72" />
+	<select name="status" value={data.status} class="input md:w-48">
 		<option value="">全部（不含已下架）</option>
 		<option value="draft">草稿</option>
 		<option value="active">上架</option>
 		<option value="archived">已下架</option>
 	</select>
-	<button type="submit" class="rounded border border-gray-300 px-4 py-2 text-sm">篩選</button>
+	<Button type="submit" variant="secondary">篩選</Button>
 </form>
 
-<div class="mt-4 overflow-x-auto">
-	<table class="w-full bg-white text-sm">
+<div class="card mt-4 overflow-x-auto p-0 md:p-0">
+	<table class="table">
 		<thead>
-			<tr class="border-b border-gray-200 text-left">
-				<th class="p-2">圖</th>
-				<th class="p-2">名稱</th>
-				<th class="p-2">狀態</th>
-				<th class="p-2">價格</th>
-				<th class="p-2">庫存</th>
-				<th class="p-2">更新</th>
+			<tr>
+				<th>圖</th>
+				<th>名稱</th>
+				<th>狀態</th>
+				<th>價格</th>
+				<th>庫存</th>
+				<th>更新</th>
 			</tr>
 		</thead>
 		<tbody>
 			{#each data.result.items as item (item.id)}
-				<tr class="border-b border-gray-100">
-					<td class="p-2">
-						{#if item.image_thumb}<img src={item.image_thumb} alt="" class="h-12 w-12 rounded object-cover" />{/if}
+				<tr>
+					<td class="w-16">
+						{#if item.image_thumb}<img src={item.image_thumb} alt="" class="h-12 w-12 rounded-lg object-cover" />{/if}
 					</td>
-					<td class="p-2">
-						<a href={`/admin/products/${item.id}`} class="font-medium hover:underline">{item.name}</a>
-						<div class="text-xs text-gray-500">{item.category_name ?? '未分類'} · /products/{item.slug}</div>
+					<td>
+						<a href={`/admin/products/${item.id}`} class="font-semibold hover:underline">{item.name}</a>
+						<div class="text-xs text-ink-soft">{item.category_name ?? '未分類'} · /products/{item.slug}</div>
 					</td>
-					<td class="p-2">{statusLabel[item.status] ?? item.status}</td>
-					<td class="p-2">
+					<td><Badge tone={productStatusTone(item.status)}>{statusLabel[item.status] ?? item.status}</Badge></td>
+					<td class="tabular-nums">
 						{item.price_min === null || item.price_max === null ? '—' : priceRange(item.price_min, item.price_max)}
 					</td>
-					<td class="p-2">{item.stock_total}</td>
-					<td class="p-2 text-gray-500">{formatDate(item.updated_at)}</td>
+					<td class="tabular-nums">{item.stock_total}</td>
+					<td class="text-ink-soft">{formatDate(item.updated_at)}</td>
 				</tr>
 			{:else}
-				<tr><td colspan="6" class="p-6 text-center text-gray-500">沒有商品</td></tr>
+				<tr><td colspan="6" class="p-6 text-center text-ink-soft">沒有商品</td></tr>
 			{/each}
 		</tbody>
 	</table>
 </div>
-
 <Pagination page={data.result.page} perPage={data.result.per_page} total={data.result.total} />

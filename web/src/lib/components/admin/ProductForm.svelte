@@ -3,6 +3,9 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api, ApiError } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
 	import type { AdminProduct, Category, ProductStatus } from '$lib/types';
 
 	type VariantForm = {
@@ -235,56 +238,39 @@
 	}
 </script>
 
-<form onsubmit={save} class="space-y-8">
-	<section class="rounded border border-gray-200 bg-white p-4">
-		<h2 class="font-semibold">基本資料</h2>
-		<div class="mt-3 grid gap-4 md:grid-cols-2">
-			<label class="block text-sm md:col-span-2">
-				商品名稱
-				<input bind:value={name} required class="mt-1 w-full rounded border border-gray-300 px-3 py-2" />
-				{#if errors.name}<span class="text-red-600">{errors.name}</span>{/if}
-			</label>
-			<label class="block text-sm">
-				網址代稱（空白會自動產生）
-				<input bind:value={slug} placeholder="例如 chicken-food" class="mt-1 w-full rounded border border-gray-300 px-3 py-2" />
-				{#if errors.slug}<span class="text-red-600">{errors.slug}</span>{/if}
-			</label>
-			<label class="block text-sm">
-				分類
-				<select bind:value={category_id} class="mt-1 w-full rounded border border-gray-300 px-3 py-2">
+<form onsubmit={save} class="space-y-6">
+	<Card title="基本資料">
+		<div class="grid gap-4 md:grid-cols-2">
+			<Field class="md:col-span-2" label="商品名稱" bind:value={name} required error={errors.name} />
+			<Field label="網址代稱（空白會自動產生）" bind:value={slug} placeholder="例如 chicken-food" error={errors.slug} />
+			<Field label="分類" error={errors.category_id}>
+				<select bind:value={category_id} class="input mt-1">
 					<option value="">未分類</option>
 					{#each categories as c (c.id)}
 						<option value={c.id}>{c.name}</option>
 					{/each}
 				</select>
-				{#if errors.category_id}<span class="text-red-600">{errors.category_id}</span>{/if}
-			</label>
-			<label class="block text-sm">
-				狀態
-				<select bind:value={status} class="mt-1 w-full rounded border border-gray-300 px-3 py-2">
+			</Field>
+			<Field label="狀態">
+				<select bind:value={status} class="input mt-1">
 					<option value="draft">草稿（買家看不到）</option>
 					<option value="active">上架</option>
 					<option value="archived">已下架</option>
 				</select>
-			</label>
-			<label class="block text-sm">
-				排序（數字小的在前）
-				<input type="number" bind:value={sort_order} class="mt-1 w-full rounded border border-gray-300 px-3 py-2" />
-			</label>
-			<label class="block text-sm md:col-span-2">
-				商品描述（純文字，會保留換行）
-				<textarea bind:value={description} rows="6" class="mt-1 w-full rounded border border-gray-300 px-3 py-2"></textarea>
-			</label>
+			</Field>
+			<Field label="排序（數字小的在前）" type="number" bind:value={sort_order} />
+			<Field class="md:col-span-2" label="商品描述（純文字，會保留換行）">
+				<textarea bind:value={description} rows="6" class="input mt-1"></textarea>
+			</Field>
 		</div>
-	</section>
+	</Card>
 
-	<section class="rounded border border-gray-200 bg-white p-4">
-		<h2 class="font-semibold">圖片（最多 9 張；第一張是主圖；拖曳可以換順序）</h2>
-		{#if errors.images}<p class="text-sm text-red-600">{errors.images}</p>{/if}
-		<ul class="mt-3 flex flex-wrap gap-3">
+	<Card title="圖片（最多 9 張；第一張是主圖；拖曳可以換順序）">
+		{#if errors.images}<p class="field-error mb-2">{errors.images}</p>{/if}
+		<ul class="flex flex-wrap gap-3">
 			{#each images as img, i (img.path)}
 				<li
-					class="w-32 rounded border border-gray-200 p-1 {dragIndex === i ? 'opacity-50' : ''}"
+					class="w-32 rounded-control border border-line p-1 {dragIndex === i ? 'opacity-50' : ''}"
 					draggable="true"
 					ondragstart={() => (dragIndex = i)}
 					ondragover={(e) => e.preventDefault()}
@@ -295,17 +281,17 @@
 					}}
 					ondragend={() => (dragIndex = null)}
 				>
-					<img src={img.thumb_path} alt={img.alt} class="aspect-square w-full rounded object-cover" />
-					<input bind:value={img.alt} placeholder="圖片說明" class="mt-1 w-full rounded border border-gray-300 px-1 py-0.5 text-xs" />
+					<img src={img.thumb_path} alt={img.alt} class="aspect-square w-full rounded-lg object-cover" />
+					<input bind:value={img.alt} placeholder="圖片說明" class="input mt-1 px-2 py-1 text-xs" />
 					<div class="mt-1 flex justify-between text-xs">
-						<span class="text-gray-500">{i === 0 ? '主圖' : `第 ${i + 1} 張`}</span>
-						<button type="button" class="text-red-600" onclick={() => removeImage(i)}>移除</button>
+						<span class="text-ink-soft">{i === 0 ? '主圖' : `第 ${i + 1} 張`}</span>
+						<button type="button" class="font-medium text-danger" onclick={() => removeImage(i)}>移除</button>
 					</div>
 				</li>
 			{/each}
 			{#if images.length < 9}
 				<li>
-					<label class="flex aspect-square w-32 cursor-pointer items-center justify-center rounded border-2 border-dashed border-gray-300 text-sm text-gray-500">
+					<label class="flex aspect-square w-32 cursor-pointer items-center justify-center rounded-control border-2 border-dashed border-line text-sm text-ink-soft hover:border-brand hover:bg-brand-soft/40">
 						{uploading ? '上傳中…' : '＋ 加圖片'}
 						<input
 							type="file"
@@ -319,109 +305,86 @@
 				</li>
 			{/if}
 		</ul>
-	</section>
+	</Card>
 
-	<section class="rounded border border-gray-200 bg-white p-4">
-		<h2 class="font-semibold">規格</h2>
-		<p class="mt-1 text-sm text-gray-500">
+	<Card title="規格">
+		<p class="text-sm text-ink-soft">
 			沒有規格就留空，只會有一列預設規格。有規格就填名稱（例如「口味」「尺寸」），用逗號列出選項，按「依選項產生規格」。
 		</p>
-		{#if errors.variants}<p class="text-sm text-red-600">{errors.variants}</p>{/if}
-		{#if errors.option2_name}<p class="text-sm text-red-600">{errors.option2_name}</p>{/if}
+		{#if errors.variants}<p class="field-error">{errors.variants}</p>{/if}
+		{#if errors.option2_name}<p class="field-error">{errors.option2_name}</p>{/if}
 		<div class="mt-3 grid gap-4 md:grid-cols-2">
 			<div class="flex gap-2">
-				<label class="block w-1/3 text-sm">
-					規格 1 名稱
-					<input bind:value={option1_name} placeholder="口味" class="mt-1 w-full rounded border border-gray-300 px-3 py-2" />
-				</label>
-				<label class="block flex-1 text-sm">
-					選項（逗號分隔）
-					<input bind:value={opt1Input} placeholder="雞肉, 牛肉" class="mt-1 w-full rounded border border-gray-300 px-3 py-2" />
-				</label>
+				<Field class="w-1/3" label="規格 1 名稱" bind:value={option1_name} placeholder="口味" />
+				<Field class="flex-1" label="選項（逗號分隔）" bind:value={opt1Input} placeholder="雞肉, 牛肉" />
 			</div>
 			<div class="flex gap-2">
-				<label class="block w-1/3 text-sm">
-					規格 2 名稱
-					<input
-						bind:value={option2_name}
-						disabled={!hasOpt1}
-						placeholder="尺寸"
-						class="mt-1 w-full rounded border border-gray-300 px-3 py-2 disabled:bg-gray-100"
-					/>
-				</label>
-				<label class="block flex-1 text-sm">
-					選項（逗號分隔）
-					<input
-						bind:value={opt2Input}
-						disabled={!hasOpt2}
-						placeholder="S, M, L"
-						class="mt-1 w-full rounded border border-gray-300 px-3 py-2 disabled:bg-gray-100"
-					/>
-				</label>
+				<Field class="w-1/3" label="規格 2 名稱" bind:value={option2_name} disabled={!hasOpt1} placeholder="尺寸" />
+				<Field class="flex-1" label="選項（逗號分隔）" bind:value={opt2Input} disabled={!hasOpt2} placeholder="S, M, L" />
 			</div>
 		</div>
 		{#if hasOpt1}
 			<div class="mt-3 flex gap-2">
-				<button type="button" onclick={generateVariants} class="rounded border border-gray-300 px-3 py-1 text-sm">依選項產生規格</button>
-				<button type="button" onclick={addVariant} class="rounded border border-gray-300 px-3 py-1 text-sm">手動加一列</button>
+				<Button variant="secondary" size="sm" onclick={generateVariants}>依選項產生規格</Button>
+				<Button variant="secondary" size="sm" onclick={addVariant}>手動加一列</Button>
 			</div>
 		{/if}
 
-		<div class="mt-3 overflow-x-auto">
-			<table class="w-full text-sm">
+		<div class="-mx-4 mt-3 overflow-x-auto md:-mx-5">
+			<table class="table">
 				<thead>
-					<tr class="border-b border-gray-200 text-left">
-						{#if hasOpt1}<th class="p-2">{option1_name}</th>{/if}
-						{#if hasOpt2}<th class="p-2">{option2_name}</th>{/if}
-						<th class="p-2">售價</th>
-						<th class="p-2">原價（可空）</th>
-						<th class="p-2">庫存</th>
-						<th class="p-2">SKU</th>
-						<th class="p-2">圖</th>
-						<th class="p-2">啟用</th>
-						<th class="p-2"></th>
+					<tr>
+						{#if hasOpt1}<th>{option1_name}</th>{/if}
+						{#if hasOpt2}<th>{option2_name}</th>{/if}
+						<th>售價</th>
+						<th>原價（可空）</th>
+						<th>庫存</th>
+						<th>SKU</th>
+						<th>圖</th>
+						<th>啟用</th>
+						<th></th>
 					</tr>
 				</thead>
 				<tbody>
 					{#each variants as v, i}
-						<tr class="border-b border-gray-100 {v.is_active ? '' : 'opacity-60'}">
-							{#if hasOpt1}<td class="p-2"><input bind:value={v.option1_value} class="w-24 rounded border border-gray-300 px-2 py-1" /></td>{/if}
-							{#if hasOpt2}<td class="p-2"><input bind:value={v.option2_value} class="w-20 rounded border border-gray-300 px-2 py-1" /></td>{/if}
-							<td class="p-2"><input type="number" min="0" bind:value={v.price} class="w-24 rounded border border-gray-300 px-2 py-1" /></td>
-							<td class="p-2"><input type="number" min="0" bind:value={v.compare_at_price} class="w-24 rounded border border-gray-300 px-2 py-1" /></td>
-							<td class="p-2"><input type="number" min="0" bind:value={v.stock} class="w-20 rounded border border-gray-300 px-2 py-1" /></td>
-							<td class="p-2"><input bind:value={v.sku} class="w-28 rounded border border-gray-300 px-2 py-1" /></td>
-							<td class="p-2">
-								<select bind:value={v.image_path} class="rounded border border-gray-300 px-2 py-1">
+						<tr class={v.is_active ? '' : 'opacity-60'}>
+							{#if hasOpt1}<td><input bind:value={v.option1_value} class="input w-24 py-1.5" /></td>{/if}
+							{#if hasOpt2}<td><input bind:value={v.option2_value} class="input w-20 py-1.5" /></td>{/if}
+							<td><input type="number" min="0" bind:value={v.price} class="input w-24 py-1.5" /></td>
+							<td><input type="number" min="0" bind:value={v.compare_at_price} class="input w-24 py-1.5" /></td>
+							<td><input type="number" min="0" bind:value={v.stock} class="input w-20 py-1.5" /></td>
+							<td><input bind:value={v.sku} class="input w-28 py-1.5" /></td>
+							<td>
+								<select bind:value={v.image_path} class="input w-auto py-1.5">
 									<option value={null}>—</option>
 									{#each images as img, j (img.path)}
 										<option value={img.path}>第 {j + 1} 張</option>
 									{/each}
 								</select>
 							</td>
-							<td class="p-2 text-center"><input type="checkbox" bind:checked={v.is_active} /></td>
-							<td class="p-2">
-								<button type="button" class="text-red-600 disabled:opacity-30" onclick={() => removeVariant(i)} disabled={variants.length === 1}>刪</button>
+							<td class="text-center"><input type="checkbox" bind:checked={v.is_active} class="accent-brand" /></td>
+							<td>
+								<button type="button" class="font-medium text-danger disabled:opacity-30" onclick={() => removeVariant(i)} disabled={variants.length === 1}>刪</button>
 							</td>
 						</tr>
 						{#if variantError(i)}
-							<tr><td colspan="9" class="p-2 text-red-600">{variantError(i)}</td></tr>
+							<tr><td colspan="9" class="text-danger">{variantError(i)}</td></tr>
 						{/if}
 					{/each}
 				</tbody>
 			</table>
 		</div>
-	</section>
+	</Card>
 
 	<div class="flex items-center gap-3">
-		<button type="submit" disabled={saving || uploading} class="rounded bg-gray-900 px-6 py-2 text-white disabled:opacity-50">
+		<Button type="submit" size="lg" disabled={saving || uploading}>
 			{saving ? '儲存中…' : product ? '儲存' : '建立商品'}
-		</button>
-		<a href="/admin/products" class="text-sm text-gray-600 hover:underline">回列表</a>
+		</Button>
+		<a href="/admin/products" class="link text-sm">回列表</a>
 		{#if product && product.status !== 'archived'}
-			<button type="button" onclick={archive} class="ml-auto rounded border border-red-300 px-4 py-2 text-sm text-red-700">
+			<Button variant={confirmArchive ? 'danger' : 'secondary'} class="ml-auto" onclick={archive}>
 				{confirmArchive ? '確定下架封存？' : '下架封存'}
-			</button>
+			</Button>
 		{/if}
 	</div>
 </form>

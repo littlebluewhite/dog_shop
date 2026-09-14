@@ -2,6 +2,10 @@
 	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { api, ApiError } from '$lib/api';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import { toast } from '$lib/toast.svelte';
 	import type { Category } from '$lib/types';
 	import type { PageProps } from './$types';
@@ -71,45 +75,43 @@
 
 <svelte:head><title>分類管理</title></svelte:head>
 
-<h1 class="text-2xl font-bold">分類</h1>
+<PageHeader title="分類" />
 
-<form onsubmit={create} class="mt-4 flex flex-wrap items-end gap-2 rounded border border-gray-200 bg-white p-4">
-	<label class="block text-sm">
-		名稱
-		<input bind:value={newName} required class="mt-1 block rounded border border-gray-300 px-3 py-2" />
-	</label>
-	<label class="block text-sm">
-		網址代稱（可空白，會自動產生）
-		<input bind:value={newSlug} placeholder="例如 food" class="mt-1 block rounded border border-gray-300 px-3 py-2" />
-	</label>
-	<button type="submit" class="rounded bg-gray-900 px-4 py-2 text-sm text-white">新增</button>
+<form onsubmit={create} class="mt-5">
+	<Card>
+		<div class="flex flex-wrap items-end gap-2">
+			<Field label="名稱" bind:value={newName} required class="w-48" />
+			<Field label="網址代稱（可空白，會自動產生）" bind:value={newSlug} placeholder="例如 food" class="w-64" />
+			<Button type="submit">新增</Button>
+		</div>
+	</Card>
 </form>
 
-<div class="mt-6 overflow-x-auto">
-	<table class="w-full border-collapse bg-white text-sm">
+<div class="card mt-6 overflow-x-auto p-0 md:p-0">
+	<table class="table">
 		<thead>
-			<tr class="border-b border-gray-200 text-left">
-				<th class="p-2">排序</th>
-				<th class="p-2">名稱</th>
-				<th class="p-2">網址代稱</th>
-				<th class="p-2"></th>
+			<tr>
+				<th>排序</th>
+				<th>名稱</th>
+				<th>網址代稱</th>
+				<th></th>
 			</tr>
 		</thead>
 		<tbody>
 			{#each rows as row (row.id)}
-				<tr class="border-b border-gray-100">
-					<td class="p-2"><input type="number" bind:value={row.sort_order} class="w-16 rounded border border-gray-300 px-2 py-1" /></td>
-					<td class="p-2"><input bind:value={row.name} class="w-full rounded border border-gray-300 px-2 py-1" /></td>
-					<td class="p-2"><input bind:value={row.slug} class="w-full rounded border border-gray-300 px-2 py-1" /></td>
-					<td class="p-2 whitespace-nowrap">
-						<button type="button" onclick={() => save(row)} class="rounded border border-gray-300 px-3 py-1">儲存</button>
-						<button type="button" onclick={() => remove(row.id)} class="ml-2 rounded border border-red-300 px-3 py-1 text-red-700">
+				<tr>
+					<td><input type="number" bind:value={row.sort_order} class="input w-20 py-1.5" /></td>
+					<td><input bind:value={row.name} class="input py-1.5" /></td>
+					<td><input bind:value={row.slug} class="input py-1.5" /></td>
+					<td class="whitespace-nowrap">
+						<Button variant="secondary" size="sm" onclick={() => save(row)}>儲存</Button>
+						<Button variant={confirmDeleteId === row.id ? 'danger' : 'secondary'} size="sm" class="ml-2" onclick={() => remove(row.id)}>
 							{confirmDeleteId === row.id ? '確定刪除？' : '刪除'}
-						</button>
+						</Button>
 					</td>
 				</tr>
 			{:else}
-				<tr><td colspan="4" class="p-4 text-center text-gray-500">還沒有分類</td></tr>
+				<tr><td colspan="4" class="p-4 text-center text-ink-soft">還沒有分類</td></tr>
 			{/each}
 		</tbody>
 	</table>
