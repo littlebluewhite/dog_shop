@@ -1,7 +1,107 @@
 @import 'tailwindcss';
 
+/* 設計 token（規格 §3）。Tailwind 4：--color-* 變成 bg-* / text-* / border-*，--radius-* 變成 rounded-* */
+@theme {
+	--font-sans: 'PingFang TC', 'Noto Sans TC', 'Microsoft JhengHei', system-ui, sans-serif;
+
+	--color-ground: #ffffff;
+	--color-ink: #16274a;
+	--color-ink-soft: #5b6b85;
+	--color-brand: #ff8a00;
+	--color-brand-deep: #d96a00;
+	--color-brand-soft: #ffe9cf;
+	--color-brand-light: #ffa640;
+	--color-surface: #f1f5fa;
+	--color-line: #d9e1ec;
+	--color-success: #15734a;
+	--color-success-soft: #e3f6ec;
+	--color-warning: #b45309;
+	--color-warning-soft: #fff4db;
+	--color-danger: #b91c1c;
+	--color-danger-soft: #fde8e8;
+
+	--radius-control: 12px;
+	--radius-card: 16px;
+	--radius-hero: 24px;
+}
+
 @layer base {
-	html {
-		font-family: system-ui, -apple-system, 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+	body {
+		background-color: var(--color-ground);
+		color: var(--color-ink);
+		font-variant-numeric: tabular-nums;
+	}
+	h1,
+	h2,
+	h3 {
+		letter-spacing: -0.01em;
+		line-height: 1.2;
+	}
+	:focus-visible {
+		outline: 2px solid var(--color-brand);
+		outline-offset: 2px;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		*,
+		*::before,
+		*::after {
+			transition-duration: 0s !important;
+			animation-duration: 0s !important;
+		}
+	}
+}
+
+/* 共用 class（規格 §4 末段）。元件與原生 select/textarea/radio 共用 */
+@layer components {
+	.input {
+		@apply w-full rounded-control border border-line bg-ground px-3 py-2.5 text-base text-ink transition-colors duration-150 placeholder:text-ink-soft/70 focus:border-brand focus:ring-2 focus:ring-brand/40 focus:outline-none disabled:bg-surface disabled:text-ink-soft aria-[invalid=true]:border-danger;
+	}
+	.field-label {
+		@apply block text-sm font-semibold text-ink;
+	}
+	.field-hint {
+		@apply mt-1 text-xs text-ink-soft;
+	}
+	.field-error {
+		@apply mt-1 text-xs font-medium text-danger;
+	}
+	.card {
+		@apply rounded-card border border-line bg-ground p-4 md:p-5;
+	}
+	.link {
+		@apply font-medium text-ink underline decoration-brand decoration-2 underline-offset-4 hover:decoration-4;
+	}
+	.chip {
+		@apply inline-flex h-10 items-center rounded-full border px-4 text-sm font-medium transition-colors duration-150;
+	}
+	.chip-idle {
+		@apply border-line bg-ground text-ink hover:border-ink;
+	}
+	.chip-selected {
+		@apply border-ink bg-ink text-ground;
+	}
+	.chip-off {
+		@apply border-dashed opacity-50;
+	}
+	.option-card {
+		@apply flex cursor-pointer items-center gap-3 rounded-control border border-line bg-ground px-4 py-3 text-sm text-ink transition-colors duration-150 has-[:checked]:border-brand has-[:checked]:bg-brand-soft has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50;
+	}
+	.option-card input {
+		@apply accent-brand;
+	}
+	.table {
+		@apply w-full text-sm;
+	}
+	.table th {
+		@apply bg-surface px-3 py-2 text-left text-xs font-semibold text-ink-soft;
+	}
+	.table td {
+		@apply border-t border-line px-3 py-2 align-top;
+	}
+	.table tbody tr:nth-child(even) {
+		@apply bg-surface/50;
+	}
+	.table tbody tr:hover {
+		@apply bg-brand-soft/40;
 	}
 }
