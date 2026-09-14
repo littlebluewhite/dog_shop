@@ -125,6 +125,10 @@ describe('clampQty', () => {
 	it('購物車用 min=0：減到 0 要回 0（外面會把該列移除）', () => {
 		expect(clampQty(0, 0, 99, 1)).toBe(0);
 	});
+	it('已售完：max=0 小於 min=1 時 min 優先，按加減都停在 1（不會顯示 0）', () => {
+		expect(clampQty(2, 1, 0, 1)).toBe(1);
+		expect(clampQty(0, 1, 0, 1)).toBe(1);
+	});
 	it('不是數字就回 fallback（不動原值）', () => {
 		expect(clampQty(Number.NaN, 1, 99, 3)).toBe(3);
 		expect(clampQty(Number.POSITIVE_INFINITY, 1, 99, 3)).toBe(3);
@@ -185,10 +189,13 @@ Expected: 三個新檔 FAIL，原因是找不到模組 `./qty`、`./status`、`.
 
 `web/src/lib/components/ui/qty.ts`：
 ```ts
-/** 把數量夾在 [min, max]，去掉小數；不是有限數字就回 fallback（呼叫端會傳目前的值，等於不動） */
+/**
+ * 把數量夾在 [min, max]，去掉小數；不是有限數字就回 fallback（呼叫端會傳目前的值，等於不動）。
+ * 先夾 max 再夾 min：商品已售完時 max=0 < min=1，min 要贏（停在 1），數量才不會顯示 0。
+ */
 export function clampQty(next: number, min: number, max: number, fallback: number): number {
 	if (!Number.isFinite(next)) return fallback;
-	return Math.min(Math.max(Math.trunc(next), min), max);
+	return Math.max(Math.min(Math.trunc(next), max), min);
 }
 ```
 
@@ -263,7 +270,7 @@ export const ICON_NAMES = Object.keys(ICON_PATHS) as IconName[];
 - [ ] **Step 5: 跑測試，確認通過**
 
 Run: `pnpm -C web test`
-Expected: 全過，測試數比基準多 6 個（`qty` 4、`status` 2、`icons` 2 → 共 8 個新測試；總數 46）。
+Expected: 全過，測試數比基準多 9 個（`qty` 5、`status` 2、`icons` 2 → 共 9 個新測試；總數 47）。
 
 - [ ] **Step 6: 換掉 `web/src/app.css`（整檔）**
 
@@ -714,7 +721,7 @@ pnpm -C web check
 pnpm -C web test
 pnpm -C web build
 ```
-Expected: `check` 0 errors 0 warnings（元件沒人用也會被檢查型別）；`test` 46 個全過；`build` 成功。若 `check` 對 `Field.svelte` 的 `any` 抱怨 eslint 註解（專案沒裝 eslint，不會），拿掉那行註解即可；若對 `Button.svelte` 的 `{...rest}` 展開到 `<a>` 報型別錯，把 rest 的型別改成 `Record<string, unknown>`，其他不動。
+Expected: `check` 0 errors 0 warnings（元件沒人用也會被檢查型別）；`test` 47 個全過；`build` 成功。若 `check` 對 `Field.svelte` 的 `any` 抱怨 eslint 註解（專案沒裝 eslint，不會），拿掉那行註解即可；若對 `Button.svelte` 的 `{...rest}` 展開到 `<a>` 報型別錯，把 rest 的型別改成 `Record<string, unknown>`，其他不動。
 
 - [ ] **Step 10: Commit**
 
@@ -930,7 +937,7 @@ pnpm -C web check
 pnpm -C web test
 pnpm -C web build
 ```
-Expected: 0/0、46 全過、build 成功。
+Expected: 0/0、47 全過、build 成功。
 
 - [ ] **Step 6: 產示意圖片（只在本機、只進開發 DB）**
 
@@ -1211,7 +1218,7 @@ pnpm -C web build
 node /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shot.mjs "http://localhost:5173/products" /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shots/products
 node /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shot.mjs "http://localhost:5173/products?q=zzzz-no-such" /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shots/products-empty
 ```
-Expected: 0/0、46 全過、build 成功、四張圖 `overflow=false`；`products-mobile.png` 裡搜尋框佔整列、下面分類與排序並排、按鈕整列、商品 2 欄；`products-empty-*.png` 有淡灰藍空狀態區塊「沒有符合的商品」。（開發 DB 商品超過 20 件才會出現分頁；沒有也沒關係，Task 9 的 e2e 不測分頁。）
+Expected: 0/0、47 全過、build 成功、四張圖 `overflow=false`；`products-mobile.png` 裡搜尋框佔整列、下面分類與排序並排、按鈕整列、商品 2 欄；`products-empty-*.png` 有淡灰藍空狀態區塊「沒有符合的商品」。（開發 DB 商品超過 20 件才會出現分頁；沒有也沒關係，Task 9 的 e2e 不測分頁。）
 
 - [ ] **Step 4: Commit**
 
@@ -1362,7 +1369,7 @@ pnpm -C web build
 node /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shot.mjs http://localhost:5173/products/demo-ui-2 /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shots/product
 node /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shot.mjs http://localhost:5173/products/demo-ui-7 /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shots/product-soldout
 ```
-Expected: 0/0、46、build 成功；`product-mobile.png` 底部有數量膠囊＋橘色「加入購物車」動作列，規格「米白／深藍」是膠囊；`product-soldout-*.png` 顯示「已售完」且按鈕半透明。都 `overflow=false`。
+Expected: 0/0、47、build 成功；`product-mobile.png` 底部有數量膠囊＋橘色「加入購物車」動作列，規格「米白／深藍」是膠囊；`product-soldout-*.png` 顯示「已售完」且按鈕半透明。都 `overflow=false`。
 
 - [ ] **Step 4: Commit**
 
@@ -1477,7 +1484,7 @@ pnpm -C web build
 node /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shot.mjs http://localhost:5173/cart /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shots/cart --cart demo-ui-1
 node /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shot.mjs http://localhost:5173/cart /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shots/cart-empty
 ```
-Expected: 0/0、46、build 成功；`cart-mobile.png` 有一張商品卡、底部黏著小計＋橘色「前往結帳」；`cart-desktop.png` 右欄有摘要卡；`cart-empty-*.png` 空狀態＋「去逛逛」。都 `overflow=false`。
+Expected: 0/0、47、build 成功；`cart-mobile.png` 有一張商品卡、底部黏著小計＋橘色「前往結帳」；`cart-desktop.png` 右欄有摘要卡；`cart-empty-*.png` 空狀態＋「去逛逛」。都 `overflow=false`。
 
 - [ ] **Step 4: Commit**
 
@@ -1719,7 +1726,7 @@ pnpm -C web test
 pnpm -C web build
 node /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shot.mjs http://localhost:5173/checkout /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shots/checkout --cart demo-ui-1
 ```
-Expected: 0/0、46、build 成功；`checkout-desktop.png` 左邊四張卡各有橘色 1～4 圓圈、右邊摘要卡有「送出訂單」；`checkout-mobile.png` 宅配／超商是兩張可點的卡片。`overflow=false`。
+Expected: 0/0、47、build 成功；`checkout-desktop.png` 左邊四張卡各有橘色 1～4 圓圈、右邊摘要卡有「送出訂單」；`checkout-mobile.png` 宅配／超商是兩張可點的卡片。`overflow=false`。
 
 - [ ] **Step 6: 用 Playwright 跑一次結帳 e2e 的宅配那條（確認 label／radio 契約沒斷）**
 
@@ -2226,7 +2233,7 @@ pnpm -C web check
 pnpm -C web test
 pnpm -C web build
 ```
-Expected: 0/0、46、build 成功。
+Expected: 0/0、47、build 成功。
 
 - [ ] **Step 14: 訂單頁截圖腳本（走一次真的結帳，綠界的 POST 攔下來，拿 ClientBackURL）**
 
@@ -3151,7 +3158,7 @@ node /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shot.mjs http://localhost:5173/ad
 node /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shot.mjs http://localhost:5173/admin/settings /Users/wilson08/.claude/jobs/82e5d2c3/tmp/shots/admin-settings --login
 ```
 再用 `curl -s http://localhost:8080/api/products/demo-ui-2` 拿到 `id`，截 `http://localhost:5173/admin/products/<id>`（`--login`）到 `shots/admin-product-edit`。
-Expected: 0/0、46、build 成功；每張 `overflow=false`；側欄膠囊、表格有淡灰藍表頭與條紋、狀態是膠囊、按鈕是橘色／白色膠囊。
+Expected: 0/0、47、build 成功；每張 `overflow=false`；側欄膠囊、表格有淡灰藍表頭與條紋、狀態是膠囊、按鈕是橘色／白色膠囊。
 
 - [ ] **Step 12: 用 Playwright 點一次商品編輯表單（確認 bind 沒斷）**
 
@@ -3218,7 +3225,7 @@ pnpm -C web check
 pnpm -C web test
 pnpm -C web build
 ```
-Expected: 0/0、46 全過、build 成功。
+Expected: 0/0、47 全過、build 成功。
 
 - [ ] **Step 3: 確認沒有新依賴**
 
