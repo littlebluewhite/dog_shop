@@ -5,6 +5,12 @@
 	import { cart } from '$lib/cart.svelte';
 	import { CHECKOUT_STORAGE_KEY, defaultForm, isMobileDevice, storeErrorMessage, toOrderInput, validateForm, type CheckoutForm } from '$lib/checkout';
 	import AddressFields from '$lib/components/AddressFields.svelte';
+	import Alert from '$lib/components/ui/Alert.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import InvoiceFields from '$lib/components/checkout/InvoiceFields.svelte';
 	import { postToEcpay } from '$lib/ecpay';
 	import { twd } from '$lib/format';
@@ -192,152 +198,136 @@
 			await goto(data.user ? `/orders/${created.order_id}` : `/orders/${created.order_id}?t=${created.guest_token}`);
 		}
 	}
-
-	const input = 'mt-1 w-full rounded border border-gray-300 px-3 py-2';
 </script>
 
-<h1 class="text-2xl font-bold">結帳</h1>
+<PageHeader title="結帳" />
 
 {#if !cart.loaded}
-	<p class="mt-4 text-gray-500">載入中…</p>
+	<p class="mt-4 text-ink-soft">載入中…</p>
 {:else if cart.lines.length === 0}
-	<p class="mt-4 text-gray-600">購物車是空的。<a href="/products" class="underline">去逛逛</a></p>
+	<div class="mt-4">
+		<EmptyState message="購物車是空的。"><Button variant="secondary" href="/products">去逛逛</Button></EmptyState>
+	</div>
 {:else}
 	<form onsubmit={submit} class="mt-6 grid gap-8 lg:grid-cols-[1fr_20rem]" novalidate>
-		<div class="space-y-8">
-			<!-- 聯絡與收件人 -->
-			<section class="space-y-3 rounded border border-gray-200 bg-white p-4">
-				<h2 class="font-medium">聯絡資料</h2>
-				{#if !data.user}
-					<p class="text-sm text-gray-600">
-						訪客結帳；<a href="/login?redirect=/checkout" class="underline">登入</a>可以用常用地址、在會員中心看訂單。
-					</p>
-				{/if}
-				<label class="block text-sm text-gray-700">
-					Email（訂單通知寄到這裡）
-					<input type="email" bind:value={form.email} autocomplete="email" class={input} />
-					{#if errors.email}<span class="text-red-600">{errors.email}</span>{/if}
-				</label>
-				{#if data.addresses.length > 0}
-					<label class="block text-sm text-gray-700">
-						常用地址
-						<div class="mt-1 flex gap-2">
-							<select bind:value={selectedAddressId} class="w-full rounded border border-gray-300 px-2 py-2">
-								<option value="">選一個帶入</option>
-								{#each data.addresses as a (a.id)}
-									<option value={a.id}>{a.recipient_name}｜{a.city}{a.district}{a.street}</option>
-								{/each}
-							</select>
-							<button type="button" onclick={useAddress} class="shrink-0 rounded border border-gray-300 px-3">帶入</button>
+		<div class="space-y-6">
+			<!-- 1 聯絡與收件人 -->
+			<Card title="聯絡資料" step={1}>
+				<div class="space-y-3">
+					{#if !data.user}
+						<p class="text-sm text-ink-soft">
+							訪客結帳；<a href="/login?redirect=/checkout" class="link">登入</a>可以用常用地址、在會員中心看訂單。
+						</p>
+					{/if}
+					<Field label="Email（訂單通知寄到這裡）" type="email" bind:value={form.email} autocomplete="email" error={errors.email} />
+					{#if data.addresses.length > 0}
+						<Field label="常用地址">
+							<div class="mt-1 flex gap-2">
+								<select bind:value={selectedAddressId} class="input">
+									<option value="">選一個帶入</option>
+									{#each data.addresses as a (a.id)}
+										<option value={a.id}>{a.recipient_name}｜{a.city}{a.district}{a.street}</option>
+									{/each}
+								</select>
+								<Button variant="secondary" onclick={useAddress}>帶入</Button>
+							</div>
+						</Field>
+					{/if}
+					<div class="grid grid-cols-2 gap-3">
+						<Field label="收件人" type="text" bind:value={form.recipient_name} autocomplete="name" error={errors.recipient_name} />
+						<Field label="手機" type="tel" bind:value={form.recipient_phone} autocomplete="tel" placeholder="09xxxxxxxx" error={errors.recipient_phone} />
+					</div>
+				</div>
+			</Card>
+			<!-- 2 取貨方式 -->
+			<Card title="取貨方式" step={2}>
+				<div class="space-y-3">
+					<div class="grid gap-2 sm:grid-cols-2">
+						<label class="option-card"><input type="radio" bind:group={form.shipping_method} value="home" /> 宅配（{twd(shipping.home_fee)}）</label>
+						<label class="option-card">
+							<input type="radio" bind:group={form.shipping_method} value="cvs" disabled={cvsBlocked} /> 超商取貨（{twd(shipping.cvs_fee)}）
+						</label>
+					</div>
+					{#if shipping.free_threshold > 0}
+						<p class="text-sm text-ink-soft">商品小計滿 {twd(shipping.free_threshold)} 免運。</p>
+					{/if}
+					{#if cvsBlocked}<p class="text-sm text-warning">商品小計超過 {twd(CVS_SUBTOTAL_LIMIT)}，只能宅配。</p>{/if}
+					{#if errors.shipping_method}<p class="field-error">{errors.shipping_method}</p>{/if}
+					{#if form.shipping_method === 'home'}
+						<AddressFields bind:address={form.address} {errors} prefix="address." />
+					{:else}
+						<div class="grid gap-2 sm:grid-cols-3">
+							{#each cvsTypes as t (t)}
+								<label class="option-card"><input type="radio" bind:group={form.cvs_sub_type} value={t} onchange={onSubTypeChange} /> {CVS_LABELS[t]}</label>
+							{/each}
 						</div>
-					</label>
-				{/if}
-				<div class="grid grid-cols-2 gap-3">
-					<label class="block text-sm text-gray-700">
-						收件人
-						<input type="text" bind:value={form.recipient_name} autocomplete="name" class={input} />
-						{#if errors.recipient_name}<span class="text-red-600">{errors.recipient_name}</span>{/if}
-					</label>
-					<label class="block text-sm text-gray-700">
-						手機
-						<input type="tel" bind:value={form.recipient_phone} autocomplete="tel" placeholder="09xxxxxxxx" class={input} />
-						{#if errors.recipient_phone}<span class="text-red-600">{errors.recipient_phone}</span>{/if}
-					</label>
+						{#if store}
+							<Alert tone="info">
+								<p class="font-semibold">{CVS_LABELS[store.sub_type]} {store.store_name}（{store.store_id}）</p>
+								<p class="text-ink-soft">{store.store_address}</p>
+							</Alert>
+						{/if}
+						<Button variant="secondary" onclick={pickStore} disabled={pickingStore}>
+							{pickingStore ? '前往綠界地圖…' : store ? '重新選擇門市' : '選擇門市'}
+						</Button>
+						{#if errors.cvs_store}<p class="field-error">{errors.cvs_store}</p>{/if}
+						<p class="text-xs text-ink-soft">超商取貨收件人請填 2～5 個中文字的本名，取貨時要核對證件。</p>
+					{/if}
 				</div>
-			</section>
-
-			<!-- 取貨方式 -->
-			<section class="space-y-3 rounded border border-gray-200 bg-white p-4">
-				<h2 class="font-medium">取貨方式</h2>
-				<div class="flex flex-wrap gap-4 text-sm">
-					<label class="flex items-center gap-2"><input type="radio" bind:group={form.shipping_method} value="home" /> 宅配（{twd(shipping.home_fee)}）</label>
-					<label class="flex items-center gap-2">
-						<input type="radio" bind:group={form.shipping_method} value="cvs" disabled={cvsBlocked} /> 超商取貨（{twd(shipping.cvs_fee)}）
-					</label>
-				</div>
-				{#if shipping.free_threshold > 0}
-					<p class="text-sm text-gray-500">商品小計滿 {twd(shipping.free_threshold)} 免運。</p>
-				{/if}
-				{#if cvsBlocked}<p class="text-sm text-yellow-700">商品小計超過 {twd(CVS_SUBTOTAL_LIMIT)}，只能宅配。</p>{/if}
-				{#if errors.shipping_method}<p class="text-sm text-red-600">{errors.shipping_method}</p>{/if}
-
-				{#if form.shipping_method === 'home'}
-					<AddressFields bind:address={form.address} {errors} prefix="address." />
-				{:else}
-					<div class="flex flex-wrap gap-4 text-sm">
-						{#each cvsTypes as t (t)}
-							<label class="flex items-center gap-2"><input type="radio" bind:group={form.cvs_sub_type} value={t} onchange={onSubTypeChange} /> {CVS_LABELS[t]}</label>
+			</Card>
+			<!-- 3 發票 -->
+			<Card title="發票" step={3}>
+				<InvoiceFields bind:invoice={form.invoice} {errors} />
+			</Card>
+			<!-- 4 付款方式 -->
+			<Card title="付款方式" step={4}>
+				<div class="space-y-3">
+					<div class="grid gap-2 sm:grid-cols-3">
+						{#each enabledPayments as m (m)}
+							<label class="option-card"><input type="radio" bind:group={form.payment_method} value={m} /> {PAYMENT_LABELS[m]}</label>
 						{/each}
 					</div>
-					{#if store}
-						<div class="rounded bg-gray-50 p-3 text-sm">
-							<div class="font-medium">{CVS_LABELS[store.sub_type]} {store.store_name}（{store.store_id}）</div>
-							<div class="text-gray-600">{store.store_address}</div>
-						</div>
-					{/if}
-					<button type="button" onclick={pickStore} disabled={pickingStore} class="rounded border border-gray-300 px-3 py-2 text-sm disabled:opacity-50">
-						{pickingStore ? '前往綠界地圖…' : store ? '重新選擇門市' : '選擇門市'}
-					</button>
-					{#if errors.cvs_store}<p class="text-sm text-red-600">{errors.cvs_store}</p>{/if}
-					<p class="text-xs text-gray-500">超商取貨收件人請填 2～5 個中文字的本名，取貨時要核對證件。</p>
-				{/if}
-			</section>
-
-			<!-- 發票 -->
-			<section class="rounded border border-gray-200 bg-white p-4">
-				<InvoiceFields bind:invoice={form.invoice} {errors} />
-			</section>
-
-			<!-- 付款方式 -->
-			<section class="space-y-3 rounded border border-gray-200 bg-white p-4">
-				<h2 class="font-medium">付款方式</h2>
-				<div class="flex flex-wrap gap-4 text-sm">
-					{#each enabledPayments as m (m)}
-						<label class="flex items-center gap-2"><input type="radio" bind:group={form.payment_method} value={m} /> {PAYMENT_LABELS[m]}</label>
-					{/each}
+					{#if errors.payment_method}<p class="field-error">{errors.payment_method}</p>{/if}
+					<Field label="備註（選填，最多 200 字）" error={errors.note}>
+						<textarea bind:value={form.note} rows="2" class="input mt-1"></textarea>
+					</Field>
 				</div>
-				{#if errors.payment_method}<p class="text-sm text-red-600">{errors.payment_method}</p>{/if}
-				<label class="block text-sm text-gray-700">
-					備註（選填，最多 200 字）
-					<textarea bind:value={form.note} rows="2" class={input}></textarea>
-					{#if errors.note}<span class="text-red-600">{errors.note}</span>{/if}
-				</label>
-			</section>
+			</Card>
 		</div>
-
-		<!-- 摘要 -->
-		<aside class="h-fit space-y-3 rounded border border-gray-200 bg-white p-4 text-sm lg:sticky lg:top-4">
-			<h2 class="font-medium">訂單摘要</h2>
-			{#if checking}<p class="text-gray-500">確認庫存中…</p>{/if}
-			<ul class="divide-y divide-gray-100">
-				{#each lines as l (l.variant_id)}
-					<li class="flex justify-between gap-2 py-2">
-						<span class="min-w-0 truncate">{l.product_name}<span class="text-gray-500">（{l.variant_label}）× {l.qty}</span></span>
-						<span class="shrink-0">{twd(l.price * l.qty)}</span>
-					</li>
-				{/each}
-			</ul>
-			{#if checked && checked.items.some((i) => !i.available)}
-				<p class="text-red-600">有商品無法購買，請回<a href="/cart" class="underline">購物車</a>處理。</p>
-			{/if}
-			{#each reduced as r, i (i)}
-				<p class="text-yellow-700">{r.name} 庫存不足，數量已調整為 {r.qty}</p>
-			{/each}
-			{#if checkFailed}
-				<p class="text-red-600">無法確認庫存，請重新確認</p>
-				<button type="button" onclick={validateCart} disabled={checking} class="w-full rounded border border-gray-300 px-3 py-2 disabled:opacity-50">
-					重新確認庫存
-				</button>
-			{/if}
-			{#if checked}
-				<div class="flex justify-between"><span>商品小計</span><span>{twd(subtotal)}</span></div>
-				<div class="flex justify-between"><span>運費</span><span>{fee === 0 ? '免運' : twd(fee)}</span></div>
-				<div class="flex justify-between text-base font-bold"><span>總計</span><span>{twd(total)}</span></div>
-			{/if}
-			<button type="submit" disabled={submitting || checking || lines.length === 0} class="w-full rounded bg-gray-900 px-4 py-2 text-white disabled:opacity-50">
-				{submitting ? '送出中…' : '送出訂單'}
-			</button>
-			<p class="text-xs text-gray-500">送出後會建立訂單並前往綠界付款頁；付款完成會回到訂單頁。</p>
+		<!-- 摘要（規格 §5.7）：桌機黏右欄；手機在最下面、不黏 -->
+		<aside class="h-fit lg:sticky lg:top-20">
+			<Card title="訂單摘要">
+				<div class="space-y-3 text-sm">
+					{#if checking}<p class="text-ink-soft">確認庫存中…</p>{/if}
+					<ul class="divide-y divide-line">
+						{#each lines as l (l.variant_id)}
+							<li class="flex justify-between gap-2 py-2">
+								<span class="min-w-0 truncate">{l.product_name}<span class="text-ink-soft">（{l.variant_label}）× {l.qty}</span></span>
+								<span class="shrink-0 tabular-nums">{twd(l.price * l.qty)}</span>
+							</li>
+						{/each}
+					</ul>
+					{#if checked && checked.items.some((i) => !i.available)}
+						<p class="text-danger">有商品無法購買，請回<a href="/cart" class="link">購物車</a>處理。</p>
+					{/if}
+					{#each reduced as r, i (i)}
+						<p class="text-warning">{r.name} 庫存不足，數量已調整為 {r.qty}</p>
+					{/each}
+					{#if checkFailed}
+						<p class="text-danger">無法確認庫存，請重新確認</p>
+						<Button variant="secondary" class="w-full" onclick={validateCart} disabled={checking}>重新確認庫存</Button>
+					{/if}
+					{#if checked}
+						<div class="flex justify-between"><span>商品小計</span><span class="tabular-nums">{twd(subtotal)}</span></div>
+						<div class="flex justify-between"><span>運費</span><span class="tabular-nums">{fee === 0 ? '免運' : twd(fee)}</span></div>
+						<div class="flex justify-between text-lg font-bold"><span>總計</span><span class="tabular-nums">{twd(total)}</span></div>
+					{/if}
+					<Button type="submit" size="lg" class="w-full" disabled={submitting || checking || lines.length === 0}>
+						{submitting ? '送出中…' : '送出訂單'}
+					</Button>
+					<p class="text-xs text-ink-soft">送出後會建立訂單並前往綠界付款頁；付款完成會回到訂單頁。</p>
+				</div>
+			</Card>
 		</aside>
 	</form>
 {/if}
