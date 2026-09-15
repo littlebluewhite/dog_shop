@@ -31,7 +31,7 @@
 			e.currentTarget.value = String(value);
 		}}
 		aria-label={label}
-		class="h-full w-12 border-x border-line bg-transparent text-center text-base font-semibold [appearance:textfield] focus:border-brand focus:ring-2 focus:ring-inset focus:ring-brand/40 focus:outline-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+		class="h-full w-12 border-x border-line bg-transparent text-center text-base font-semibold [appearance:textfield] focus:border-ink focus:ring-2 focus:ring-inset focus:ring-ink/40 focus:outline-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
 	/>
 	<button type="button" class="flex h-full w-10 items-center justify-center rounded-r-full text-ink hover:bg-surface" onclick={() => set(value + 1)} aria-label="增加">
 		<Icon name="plus" size={16} />

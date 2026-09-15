@@ -72,10 +72,11 @@
 				{#if data.shop.contact_phone}<p>{data.shop.contact_phone}</p>{/if}
 			</div>
 		</div>
+		<!-- 深藍底上全域的 ink 焦點框看不到，改用白框 -->
 		<nav class="flex flex-col gap-2 text-sm text-ground/80 md:items-end" aria-label="頁尾選單">
-			<a href="/products" class="hover:text-ground hover:underline">全部商品</a>
-			<a href="/cart" class="hover:text-ground hover:underline">購物車</a>
-			<a href="/account" class="hover:text-ground hover:underline">會員中心</a>
+			<a href="/products" class="hover:text-ground hover:underline focus-visible:outline-ground">全部商品</a>
+			<a href="/cart" class="hover:text-ground hover:underline focus-visible:outline-ground">購物車</a>
+			<a href="/account" class="hover:text-ground hover:underline focus-visible:outline-ground">會員中心</a>
 		</nav>
 	</div>
 </footer>

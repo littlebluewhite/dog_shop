@@ -6,7 +6,7 @@
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import QtyStepper from '$lib/components/ui/QtyStepper.svelte';
-	import { cart } from '$lib/cart.svelte';
+	import { cart, cartQtyMax } from '$lib/cart.svelte';
 	import { twd } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
 	import type { CartValidateResponse } from '$lib/types';
@@ -110,7 +110,7 @@
 								{/if}
 							</div>
 							<div class="flex basis-full items-center justify-between gap-3 md:basis-auto md:gap-4">
-								<QtyStepper value={line.qty} min={0} max={p?.available ? p.stock : 99} onchange={(v) => cart.setQty(line.variant_id, v)} />
+								<QtyStepper value={line.qty} min={0} max={cartQtyMax(p?.available ? p.stock : undefined)} onchange={(v) => cart.setQty(line.variant_id, v)} />
 								<div class="w-24 text-right font-bold tabular-nums">{twd(line.price * line.qty)}</div>
 								<Button variant="ghost" size="sm" onclick={() => cart.remove(line.variant_id)}>移除</Button>
 							</div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Cart, MAX_QTY } from './cart.svelte';
+import { Cart, MAX_QTY, cartQtyMax } from './cart.svelte';
 
 const line = {
 	variant_id: 'v1',
@@ -70,5 +70,17 @@ describe('Cart', () => {
 		expect(cart.lines[0].qty).toBe(2);
 		cart.update('nope', { price: 1 });
 		expect(cart.lines).toHaveLength(1);
+	});
+});
+
+describe('cartQtyMax（購物車列 stepper 的 max）', () => {
+	it('庫存超過 MAX_QTY 時夾到 MAX_QTY：setQty 只會收 99，stepper 的 max 也得是 99，畫面才不會顯示 100', () => {
+		expect(cartQtyMax(150)).toBe(MAX_QTY);
+		expect(cartQtyMax(MAX_QTY + 1)).toBe(MAX_QTY);
+	});
+	it('庫存不到 MAX_QTY 時用庫存；還沒核對到庫存（undefined）時用 MAX_QTY', () => {
+		expect(cartQtyMax(5)).toBe(5);
+		expect(cartQtyMax(0)).toBe(0);
+		expect(cartQtyMax(undefined)).toBe(MAX_QTY);
 	});
 });

@@ -11,6 +11,15 @@ export type CartLine = {
 const STORAGE_KEY = 'dog_shop_cart_v1';
 export const MAX_QTY = 99;
 
+/**
+ * 購物車列 QtyStepper 的 max：庫存與 MAX_QTY 取小（還沒核對到庫存時就是 MAX_QTY）。
+ * setQty 會把數量夾在 MAX_QTY；stepper 的 max 若比它大（庫存 150），按「增加」時 stepper 自己會顯示 100、101，
+ * 購物車卻停在 99 —— 兩邊上限一致，畫面才永遠等於購物車。
+ */
+export function cartQtyMax(stock: number | undefined): number {
+	return Math.min(MAX_QTY, stock ?? MAX_QTY);
+}
+
 function readStorage(): CartLine[] {
 	try {
 		const raw = globalThis.localStorage?.getItem(STORAGE_KEY);

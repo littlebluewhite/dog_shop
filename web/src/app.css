@@ -8,7 +8,7 @@
 	--color-ink: #16274a;
 	--color-ink-soft: #5b6b85;
 	--color-brand: #ff8a00;
-	--color-brand-deep: #d96a00;
+	--color-brand-deep: #e57200; /* 主按鈕 hover 底：深藍字在上面 4.73:1（原 #d96a00 只有 4.22，按鈕字 14–16px 要 4.5） */
 	--color-brand-soft: #ffe9cf;
 	--color-brand-light: #ffa640;
 	--color-surface: #f1f5fa;
@@ -37,8 +37,9 @@
 		letter-spacing: -0.01em;
 		line-height: 1.2;
 	}
+	/* 焦點框用深藍不用橘：橘框在首頁橘看板上會消失、在白底也只有 2.36:1；ink 在白底 14.8:1、橘底 6.2:1（深藍頁尾的連結另外用白框） */
 	:focus-visible {
-		outline: 2px solid var(--color-brand);
+		outline: 2px solid var(--color-ink);
 		outline-offset: 2px;
 	}
 	@media (prefers-reduced-motion: reduce) {
@@ -53,8 +54,9 @@
 
 /* 共用 class（規格 §4 末段）。元件與原生 select/textarea/radio 共用 */
 @layer components {
+	/* focus 邊框用 ink：橘色邊框在白底只有 2.36:1，不到非文字的 3:1 */
 	.input {
-		@apply w-full rounded-control border border-line bg-ground px-3 py-2.5 text-base text-ink transition-colors duration-150 placeholder:text-ink-soft/70 focus:border-brand focus:ring-2 focus:ring-brand/40 focus:outline-none disabled:bg-surface disabled:text-ink-soft aria-[invalid=true]:border-danger;
+		@apply w-full rounded-control border border-line bg-ground px-3 py-2.5 text-base text-ink transition-colors duration-150 placeholder:text-ink-soft/70 focus:border-ink focus:ring-2 focus:ring-ink/40 focus:outline-none disabled:bg-surface disabled:text-ink-soft aria-[invalid=true]:border-danger;
 	}
 	.field-label {
 		@apply block text-sm font-semibold text-ink;
