@@ -46,10 +46,10 @@
 | token | 值 | 用途 |
 |---|---|---|
 | `--color-ground` | `#FFFFFF` | 頁面底色、卡片底色 |
-| `--color-ink` | `#16274A` | 主要文字、標題、價格、深藍頁尾底色 |
+| `--color-ink` | `#16274A` | 主要文字、標題、價格、深藍頁尾底色、焦點框（深藍頁尾內的連結改白框） |
 | `--color-ink-soft` | `#5B6B85` | 次要文字（規格名、時間、說明） |
-| `--color-brand` | `#FF8A00` | 主按鈕底、選中的膠囊、購物車數字、看板底、焦點框 |
-| `--color-brand-deep` | `#D96A00` | 主按鈕 hover/active 底 |
+| `--color-brand` | `#FF8A00` | 主按鈕底、選中的膠囊、購物車數字、看板底 |
+| `--color-brand-deep` | `#E57200` | 主按鈕 hover/active 底（深藍字在上面 4.7:1；原 `#D96A00` 只有 4.2:1，不到 AA） |
 | `--color-brand-soft` | `#FFE9CF` | 選中的分頁/導覽底、hover 底、看板內的白膠囊 hover |
 | `--color-surface` | `#F1F5FA` | 圖片底、表格條紋、表頭底、次要區塊底 |
 | `--color-line` | `#D9E1EC` | 邊框、分隔線 |
@@ -60,7 +60,7 @@
 
 **對比規則**（WCAG AA）：
 - 橘色 `#FF8A00` 在白底上對比只有約 2.4:1，**永遠不用來寫字**，只用來當底色與裝飾。
-- 橘底一律配深藍字：`#16274A` 在 `#FF8A00` 上約 6.3:1，在 `#D96A00` 上約 4.2:1（hover 時可接受，因按鈕字都是 16px 粗體）。
+- 橘底一律配深藍字：`#16274A` 在 `#FF8A00` 上約 6.2:1，在 hover 的 `#E57200` 上約 4.7:1。按鈕字 14–16px 半粗不算 WCAG 的大字（門檻是 18.66px 粗體），所以 hover 也要過 4.5:1。
 - 價格用 `ink` 粗體，不用橘色。
 - 連結：`ink` 字 + 橘色底線（`text-decoration-color`），hover 底線變粗。
 
@@ -78,7 +78,7 @@
 - 內容最大寬 72rem；左右內距手機 16px、桌機 24px。
 - 陰影：預設沒有。只有兩處：手機底部黏住的動作列（`0 -8px 24px rgba(22,39,74,.08)`）與 toast。
 - 動態：只有顏色變化 150ms（hover/active）與按下時 `scale(.98)`。沒有卡片 hover 位移、沒有進場淡入。`prefers-reduced-motion: reduce` 時關掉所有 transition。
-- 焦點：所有可操作元素 `focus-visible` 顯示 2px 橘色外框、offset 2px。
+- 焦點：所有可操作元素 `focus-visible` 顯示 2px 深藍（`ink`）外框、offset 2px；深藍頁尾裡的連結改白框。不用橘色：橘框在橘看板上會消失，在白底也只有 2.4:1，不到非文字的 3:1。
 
 ### 3.4 圖示與品牌記號
 
@@ -106,7 +106,7 @@
 
 既有元件改樣式、位置不動：`components/Toasts.svelte`（深藍底白字膠囊、柔陰影）、`components/Pagination.svelte`（上一頁/下一頁改用 `Button variant="secondary" size="sm"` + chevron 圖示；「第 x / y 頁」照舊）、`components/ProductCard.svelte`、`components/ProductView.svelte`、`components/AddressFields.svelte`、`components/checkout/InvoiceFields.svelte`、`components/admin/ProductForm.svelte`。
 
-全域 class（`app.css` 的 `@layer components`，給元件與原生元素共用）：`.input`（12px 圓角、`line` 邊、內距 12px×10px、focus 橘框、`aria-invalid` 紅邊）、`.field-label`（14px、`ink`、600）、`.field-hint`（12px `ink-soft`）、`.field-error`（12px `danger`）、`.card`、`.table`（後台表格：表頭 `surface` 底 12px 600、列間 `line` 線、偶數列 `surface` 底、hover 淡橘）、`.option-card`（可點的 radio 卡：`label` 帶 `line` 邊 12px 圓角，`has-checked:` 時邊框變橘、底變淡橘）、`.link`（`ink` 字 + 橘底線）。
+全域 class（`app.css` 的 `@layer components`，給元件與原生元素共用）：`.input`（12px 圓角、`line` 邊、內距 12px×10px、focus 深藍框（橘框在白底只有 2.4:1）、`aria-invalid` 紅邊）、`.field-label`（14px、`ink`、600）、`.field-hint`（12px `ink-soft`）、`.field-error`（12px `danger`）、`.card`、`.table`（後台表格：表頭 `surface` 底 12px 600、列間 `line` 線、偶數列 `surface` 底、hover 淡橘）、`.option-card`（可點的 radio 卡：`label` 帶 `line` 邊 12px 圓角，`has-checked:` 時邊框變橘、底變淡橘）、`.link`（`ink` 字 + 橘底線）。
 
 ## 5. 版面與各頁設計
 
@@ -148,7 +148,7 @@
 
 - 沒有邊框、沒有陰影。上：正方形圖片格（`surface` 底、12px 圓角、`object-cover`、`loading="lazy"` 照舊）；沒有圖片時置中一個 `image` 圖示（`ink-soft`）。
 - `!in_stock` 時圖片右上角一顆 `Badge tone="danger"`「已售完」（文案照舊，改位置不改字），圖片加 `opacity-60`。
-- 下：名稱 14px、兩行截斷、`ink`；價格 16px 700 tabular-nums。整張是一個 `<a>`，focus 時橘框。
+- 下：名稱 14px、兩行截斷、`ink`；價格 16px 700 tabular-nums。整張是一個 `<a>`，focus 時深藍框（§3.3）。
 
 ### 5.4 商品列表（`routes/products/+page.svelte`）
 

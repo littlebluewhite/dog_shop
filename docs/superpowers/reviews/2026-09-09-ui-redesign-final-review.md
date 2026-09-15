@@ -432,12 +432,19 @@ the already-ruled item 12 and this merges cleanly.
 
 ## 附錄 C：codex 第二意見
 
-**未取得。** 依使用者規則用 `codex exec -s read-only` 對整支分支跑第二意見，兩次都在讀完檔案清單後被 OpenAI 用量上限擋下、沒有產出任何 finding：
+審查當時未取得：`codex exec -s read-only` 兩次（`74f13e6..40dc8cb`、`74f13e6..617cf06`）都在讀完檔案清單後撞到 OpenAI 用量上限，依 Ruling 12 略過。
 
-- 第一次對 `74f13e6..40dc8cb`（與 opus 最終審查同時，Ruling 11）：38,886 tokens 後 `You've hit your usage limit … try again at 10:33 PM`。
-- 第二次對 `74f13e6..617cf06`（22:34 額度重置後）：16,349 tokens 後再次撞上限，下次重置 `Sep 15th, 2026 3:30 AM`。
+**2026-09-15 補跑（分支已快轉進 main 後，`/codex-review-fix`）**：`codex exec -s read-only`（gpt-6-astra、xhigh）對 `74f13e6..401c65b` 跑完整第二意見，7 分鐘、100,365 tokens，3 個 P2、沒有 P1／P3，三條都對原始碼核實過：
 
-依 Ruling 12 略過。請在額度恢復後於分支 `worktree-ui-redesign` 自行執行 `/codex-review-fix`（codex 設定檔是 `danger-full-access`，記得加 `-s read-only`）；若有 P1／P2 再開一波修正並重跑 `pnpm -C web check`／`test`／`build` 與 Playwright e2e。
+1. **[P2 Standards] 焦點框在首頁看板上消失。** `app.css:40` 全域 `:focus-visible` 用 `--color-brand`，與看板底同色，Tab 到分類膠囊時看不到焦點；橘框在白底也只有 2.36:1（非文字要 3:1），`.input` 的 focus ring 更淡。→ 確認。全域焦點框改 `ink`（白底 14.8:1、橘底 6.2:1），深藍頁尾的 3 個連結改白框；`.input` 與 QtyStepper 輸入框的 focus 邊框／ring 改 `ink`。
+2. **[P2 Standards] 主按鈕 hover 字對比不足。** `Button.svelte:30` 深藍字在 `#d96a00` 上 4.22:1，按鈕字 14–16px 要 4.5:1。→ 確認。規格 §3.1 原寫「hover 可接受，因按鈕字 16px 粗體」，但 WCAG 大字門檻是 18.66px 粗體，理由不成立；`--color-brand-deep` 改 `#e57200`（4.73:1）。
+3. **[P2 Spec] 購物車 stepper 顯示的數量可能與購物車不同。** `cart/+page.svelte:113` 把庫存當 `max`，`Cart.setQty` 卻夾在 99：庫存 150、數量 99 時按「增加」，stepper 自己顯示 100、101，購物車與小計停在 99（codex 離線重現）。→ 確認，是本次改版新引入的（舊版顯示值直接來自 store，沒有本地狀態）。`cart.svelte.ts` 加 `cartQtyMax(stock) = min(stock ?? MAX_QTY, MAX_QTY)`，購物車列改用它，兩邊上限一致。
+
+修正 commit `78818c6`（分支 `worktree-codex-fixes-ui`，在 main `401c65b` 之上）。回歸測試：`web/src/lib/theme.test.ts` 讀 `app.css` 的 token 算 WCAG 對比（改前 3 條紅：4.22 < 4.5、焦點框不是 ink、`.input` 不是 ink）；`cart.test.ts` 加 `cartQtyMax` 2 條。gate 重跑：vitest 53/53、svelte-check 0 錯 0 警告、build 成功、Playwright e2e 2 passed（9.0s）。
+
+codex 另外註記、未動：`<label>` 包兩個控制項與後台無 label 的控制項早於本範圍；首頁移除「分類」標題、加店家簡介，頁尾加電話與導覽，都是規格 §5 的要求；產品頁 `max={selected?.stock ?? 99}` 選 150 只會加 99 進購物車，舊版就如此、codex 未列。
+
+**規格偏離與看得見的變化**：§3.1 token 表與對比規則、§3.3 焦點、§4 `.input` 的橘色焦點框改成深藍，規格已在同一個 docs commit 同步。使用者會看到：鍵盤焦點框從橘變深藍、輸入框點進去的邊框從橘變深藍、主按鈕 hover 的橘比原本淺一點（`#d96a00` → `#e57200`）。
 
 ## 附錄 D：開發環境備忘（給下一個 session）
 
